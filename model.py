@@ -1,117 +1,192 @@
-#!/usr/bin/env python3
+from typing import List, Dict
+import math
+from dataclasses import dataclass
+from tinygrad import Tensor,nn
+from einops import rearrange
 import gymnasium as gym
-import pickle, math
-import numpy as np
-from tinygrad.helpers import prod
-from tinygrad import Tensor, nn
 from PIL import Image
+import numpy as np
+# TODO: i like torches tensors that include dtype in the type
 
-class NormConv2d:
-  def __init__(self, in_channels, out_channels, kernel_size, stride=1, padding=0, transp=False):
-    self.kernel_size = (kernel_size, kernel_size) if isinstance(kernel_size, int) else tuple(kernel_size)
-    self.stride, self.padding, self.transp = stride, padding, transp
-    self.scale = Tensor.ones(out_channels)
-    self.eps = 1e-6
-    scale = 1 / math.sqrt(in_channels * prod(self.kernel_size))
-    if transp: self.weight = Tensor.uniform(in_channels, out_channels, *self.kernel_size, low=-scale, high=scale)
-    else: self.weight = Tensor.uniform(out_channels, in_channels, *self.kernel_size, low=-scale, high=scale)
-    self.bias = Tensor.uniform(out_channels, low=-scale, high=scale)
+class Downsample:
+  def __init__(self, num_channels: int) -> None:
+    self.conv = nn.Conv2d(num_channels, num_channels, kernel_size=2, stride=2, padding=0)
+  def __call__(self, x: Tensor) -> Tensor: return self.conv(x)
+
+class Upsample:
+  def __init__(self, num_channels: int) -> None:
+    self.conv = nn.Conv2d(num_channels, num_channels, kernel_size=3, stride=1, padding=1)
+  def __call__(self, x: Tensor) -> Tensor:
+    # TODO: is this fast?
+    # AssertionError: only supports linear interpolate
+    #x = x.interpolate([s*2 for s in x.size()], mode="nearest")
+    x = rearrange(x, 'b c h w -> b c h 1 w 1').expand(x.shape[0], x.shape[1], x.shape[2], 2, x.shape[3], 2) \
+      .reshape(x.shape[0], x.shape[1], x.shape[2]*2, x.shape[3]*2)
+    return self.conv(x)
+
+class ResidualBlock:
+  def __init__(self, in_channels: int, out_channels: int, num_groups_norm: int = 32) -> None:
+    self.f = [
+      nn.GroupNorm(num_groups_norm, in_channels),
+      Tensor.silu,
+      nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=1, padding=1),
+      nn.GroupNorm(num_groups_norm, out_channels),
+      Tensor.silu,
+      nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=1, padding=1),
+    ]
+    self.skip_projection = (lambda x: x) if in_channels == out_channels else nn.Conv2d(in_channels, out_channels, kernel_size=1)
+  def __call__(self, x: Tensor) -> Tensor: return self.skip_projection(x) + x.sequential(self.f)
+
+class FrameDecoder:
+  def __init__(self):
+    self.decoder = [
+      nn.Conv2d(84, 256, kernel_size=3, stride=1, padding=1),
+      ResidualBlock(256, 128), Upsample(128),
+      ResidualBlock(128, 128), Upsample(128),
+      ResidualBlock(128, 64),
+      ResidualBlock(64, 64), Upsample(64),
+      ResidualBlock(64, 64),
+      nn.GroupNorm(num_groups=32, num_channels=64),
+      Tensor.silu,
+      nn.Conv2d(64, 3, kernel_size=3, stride=1, padding=1),
+    ]
 
   def __call__(self, x:Tensor) -> Tensor:
-    if self.transp: x = x.conv_transpose2d(self.weight, self.bias, padding=self.padding, stride=self.stride, output_padding=1)
-    else: x = x.conv2d(self.weight, self.bias, padding=self.padding, stride=self.stride)
-    # TODO: RMSNorm should work on given channel, not just -1
-    x = x * (x.square().mean(1, keepdim=True) + self.eps).rsqrt()
-    return x * self.scale.reshape(1, -1, 1, 1)
-
-class RSSM:
-  def __init__(self):
-    pass
-
-class Actor:
-  def __init__(self):
-    self.mlp = [
-      nn.Linear(10240, 1024), nn.RMSNorm(1024), Tensor.silu,
-      nn.Linear(1024, 1024),  nn.RMSNorm(1024), Tensor.silu,
-      nn.Linear(1024, 1024),  nn.RMSNorm(1024), Tensor.silu,
-      nn.Linear(1024, 18)]
-  def __call__(self, x:Tensor) -> Tensor: return x.sequential(self.mlp)
-
-class Encoder:
-  def __init__(self):
-    # TODO: i want padding to support "same"
-    self.conv = [
-      NormConv2d(1, 64, 5, padding=(2,2)),
-      NormConv2d(64, 128, 5, 2, padding=(2,2)),
-      NormConv2d(128, 192, 5, 2, padding=(2,2)),
-      NormConv2d(192, 256, 5, 2, padding=(2,2)),
-      NormConv2d(256, 256, 5, 2, padding=(2,2))]
-
-  def __call__(self, x:Tensor) -> Tensor:
-    for c in self.conv: x = c(x).silu()
+    b, t, _, _, _ = x.size()
+    x = rearrange(x, 'b t c h w -> (b t) c h w')
+    x = x.sequential(self.decoder)
+    x = rearrange(x, '(b t) c h w -> b t c h w', b=b, t=t)
     return x
 
-class Decoder:
+class FrameEncoder:
+  def __init__(self, channels: List[int]):
+    self.encoder = [
+      nn.Conv2d(channels[0], channels[1], kernel_size=3, stride=1, padding=1),
+      ResidualBlock(channels[1], channels[1]), Downsample(channels[1]),
+      ResidualBlock(channels[1], channels[1]),
+      ResidualBlock(channels[1], channels[2]), Downsample(channels[2]),
+      ResidualBlock(channels[2], channels[2]), Downsample(channels[2]),
+      ResidualBlock(channels[2], channels[3]),
+      nn.GroupNorm(num_groups=32, num_channels=channels[3]),
+      Tensor.silu,
+      nn.Conv2d(channels[3], channels[4], kernel_size=3, stride=1, padding=1),
+    ]
+
+  def __call__(self, x: Tensor) -> Tensor:
+    b, t, _, _, _ = x.size()
+    x = rearrange(x, 'b t c h w -> (b t) c h w')
+    x = x.sequential(self.encoder)
+    x = rearrange(x, '(b t) c h w -> b t c h w', b=b, t=t)
+    return x
+
+@dataclass
+class QuantizerOutput:
+  q: Tensor
+  tokens: Tensor
+  loss: Dict[str, Tensor]
+  metrics: Dict[str, float]
+
+class Quantizer:
+  def __init__(self, codebook_size: int, codebook_dim: int, input_dim: int):
+    assert math.log2(codebook_size).is_integer()
+    self.pre_quant_proj = nn.Linear(input_dim, codebook_dim)
+    self.post_quant_proj = nn.Linear(codebook_dim, input_dim)
+    self.codebook = Tensor.uniform(codebook_size, codebook_dim, low=-1.0 / codebook_size, high=1.0 / codebook_size)
+
+  def __call__(self, z:Tensor) -> QuantizerOutput:
+    z = self.pre_quant_proj(z)
+    b, k = z.size(0), z.size(2)
+    z = rearrange(z, 'b t k e -> (b t k) e')
+
+    cosine_similarity = Tensor.einsum('n e, c e -> n c', z, self.codebook)
+    tokens = cosine_similarity.argmax(axis=-1)  # TODO: support both axis and dim
+    q = self.codebook[tokens]
+
+    losses = {'commitment_loss': 0.02 * (z - q.detach()).pow(2).mean()}
+    metrics = {}
+
+    q = z + (q - z).detach()
+    q = self.post_quant_proj(q)
+
+    q = rearrange(q, '(b t k) e -> b t k e', b=b, k=k)
+    tokens = rearrange(tokens, '(b t k) -> b t k', b=b, k=k)
+
+    return QuantizerOutput(q, tokens, losses, metrics)
+
+class Tokenizer:
   def __init__(self):
-    self.conv = [
-      NormConv2d(128, 64, 5, 2, padding=(2,2), transp=True),
-      NormConv2d(192, 128, 5, 2, padding=(2,2), transp=True),
-      NormConv2d(256, 192, 5, 2, padding=(2,2), transp=True),
-      NormConv2d(256, 256, 5, 2, padding=(2,2), transp=True)]
-    self.imgout = nn.ConvTranspose2d(64, 1, 5, padding=(2,2))
+    self.encoder_act_emb = nn.Embedding(6, 4096)
+    self.decoder_act_emb = nn.Embedding(6, 256)
+    self.frame_cnn = FrameEncoder([3,32,64,128,16])
+    self.encoder = FrameEncoder([7,64,128,256,64])
+    self.decoder = FrameDecoder()
+    self.quantizer = Quantizer(codebook_size=1024, codebook_dim=64, input_dim=1024)
 
-  def __call__(self, x:Tensor) -> Tensor:
-    for c in self.conv[::-1]: x = c(x).silu()
-    return self.imgout(x)
+    # guessed to make dims match
+    self.token_res = 4
+    self.tokens_grid_res = 2
 
+  # need typing
+  def encode(self, x1: Tensor, a: Tensor, x2: Tensor) -> Tensor:
+    a_emb = rearrange(self.encoder_act_emb(a), 'b t (h w) -> b t 1 h w', h=x1.size(3))
+    encoder_input = Tensor.cat(x1, a_emb, x2, dim=2)
+    return self.encoder(encoder_input)
+
+  def decode(self, x1: Tensor, a: Tensor, q2: Tensor, should_clamp: bool = False) -> Tensor:
+    x1_emb = self.frame_cnn(x1)
+    a_emb = rearrange(self.decoder_act_emb(a), 'b t (c h w) -> b t c h w', c=4, h=x1_emb.size(3))
+    print(x1_emb.shape, a_emb.shape, q2.shape)
+
+    decoder_input = Tensor.cat(x1_emb, a_emb, q2, dim=2)
+    r = self.decoder(decoder_input)
+    r = r.clamp(0, 1).mul(255).round().div(255) if should_clamp else r
+    return r
+
+  def encode_decode(self, x1: Tensor, a: Tensor, x2: Tensor) -> Tensor:
+    z = self.encode(x1, a, x2)
+    z = rearrange(z, 'b t c (h k) (w l) -> b t (h w) (k l c)', k=self.token_res, l=self.token_res)
+    q = rearrange(self.quantizer(z).q, 'b t (h w) (k l e) -> b t e (h k) (w l)', h=self.tokens_grid_res, k=self.token_res, l=self.token_res)
+    r = self.decode(x1, a, q, should_clamp=True)
+    return r
+
+  def __call__(self, x: Tensor) -> Tensor:
+    return self.frame_cnn(x)
+
+# TODO: this should be in tinygrad
 def preprocess(obs, size=(64, 64)):
   image = Image.fromarray(obs).resize(size, Image.NEAREST)
-  weights = [0.299, 0.587, 1 - (0.299 + 0.587)]
-  image = np.tensordot(image, weights, (-1, 0))
-  return Tensor(image, dtype='float32').unsqueeze(0)
+  return Tensor(np.array(image), dtype='float32').permute(2,0,1).reshape(1,1,3,64,64) / 256.0
 
 if __name__ == "__main__":
   env = gym.make('ALE/Pong-v5')
   obs, info = env.reset()
 
-  actor = Actor()
-  encoder = Encoder()
-  decoder = Decoder()
-  dyn = RSSM()
+  model = Tokenizer()
 
-  # TODO: confirm that assigning to transpose like this is correct
-  assigns = {
-    "agent/actor/h0/kernel": actor.mlp[0].weight.T,
-    "agent/actor/h0/bias": actor.mlp[0].bias,
-    "agent/actor/h0/norm/scale": actor.mlp[1].weight,
-    "agent/actor/h1/kernel": actor.mlp[3].weight.T,
-    "agent/actor/h1/bias": actor.mlp[3].bias,
-    "agent/actor/h1/norm/scale": actor.mlp[4].weight,
-    "agent/actor/h2/kernel": actor.mlp[6].weight.T,
-    "agent/actor/h2/bias": actor.mlp[6].bias,
-    "agent/actor/h2/norm/scale": actor.mlp[7].weight,
-    "agent/actor/action/out/kernel": actor.mlp[9].weight.T,
-    "agent/actor/action/out/bias": actor.mlp[9].bias,
-  }
+  # scp t18:~/build/delta-iris/outputs/2024-08-13/20-34-53/checkpoints/last.pt .
+  dat = nn.state.torch_load("last.pt")
+  wm = {}
+  for k,v in dat.items():
+    if k.startswith("tokenizer.") or True:
+      print(k, v.shape)
+      wm[k[len("tokenizer."):]] = v
+  print(len(wm))
+  for k in nn.state.get_state_dict(model): print(k)
+  nn.state.load_state_dict(model, wm)
 
-  dat = pickle.load(open("checkpoint.ckpt", "rb"))
-  for k, v in dat['agent'].items():
-    print(k, v.shape if hasattr(v, 'shape') else None)
-    for s,m,e in [('agent/enc/conv', encoder, True), ('agent/dec/conv', decoder, False)]:
-      if k.startswith(s):
-        if k.endswith('kernel'): m.conv[int(k.split(s)[1].split("/")[0])].weight.assign(v.transpose(3,2,0,1) if e else v.transpose(2,3,0,1))
-        if k.endswith('bias'): m.conv[int(k.split(s)[1].split("/")[0])].bias.assign(v)
-        if k.endswith('scale'): m.conv[int(k.split(s)[1].split("/")[0])].scale.assign(v)
-    if k == 'agent/dec/imgout/kernel': decoder.imgout.weight.assign(v.transpose(2,3,0,1))
-    if k == 'agent/dec/imgout/bias': decoder.imgout.bias.assign(v)
-    if k in assigns: assigns[k].assign(v)
-
-  out = encoder(preprocess(obs, size=(96,96)).unsqueeze(0))
-  print(out.shape)
-  ret = decoder(out)
-  print(ret.shape)
-  exit(0)
+  img_0 = preprocess(obs)
 
   import matplotlib.pyplot as plt
-  plt.imshow(ret[0, 0].numpy())
-  plt.show()
+
+  for i in range(100):
+    action = env.action_space.sample()
+    obs, reward, terminated, truncated, info = env.step(action)
+    img_1 = preprocess(obs)
+    out = model.encode_decode(img_0, Tensor([action]), img_1)
+
+    print(out)
+    pred = out[0, 0].permute(1,2,0).numpy()
+    plt.imshow(Tensor.cat(*[x[0, 0].permute(1,2,0) for x in [img_0, img_1, out]], dim=1).numpy())
+    plt.draw()
+    plt.pause(0.01)
+    img_0 = img_1

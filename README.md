@@ -13,3 +13,6 @@ This is designed to run on a tinybox, either red or green, with just `./train.py
 3. Get fine tuning working
 4. Get full training working
 
+## delta-iris
+
+Might be a better choice, the repo is a lot easier to read. https://github.com/vmicheli/delta-iris
