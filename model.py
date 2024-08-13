@@ -20,13 +20,26 @@ class NormConv2d:
   def __call__(self, x:Tensor) -> Tensor:
     if self.transp: x = x.conv_transpose2d(self.weight, self.bias, padding=self.padding, stride=self.stride, output_padding=1)
     else: x = x.conv2d(self.weight, self.bias, padding=self.padding, stride=self.stride)
-    # RMSNorm should work on given channel, not just -1
+    # TODO: RMSNorm should work on given channel, not just -1
     x = x * (x.square().mean(1, keepdim=True) + self.eps).rsqrt()
     return x * self.scale.reshape(1, -1, 1, 1)
 
+class RSSM:
+  def __init__(self):
+    pass
+
+class Actor:
+  def __init__(self):
+    self.mlp = [
+      nn.Linear(10240, 1024), nn.RMSNorm(1024), Tensor.silu,
+      nn.Linear(1024, 1024),  nn.RMSNorm(1024), Tensor.silu,
+      nn.Linear(1024, 1024),  nn.RMSNorm(1024), Tensor.silu,
+      nn.Linear(1024, 18)]
+  def __call__(self, x:Tensor) -> Tensor: return x.sequential(self.mlp)
+
 class Encoder:
   def __init__(self):
-    # NOTE: i want padding to support "same"
+    # TODO: i want padding to support "same"
     self.conv = [
       NormConv2d(1, 64, 5, padding=(2,2)),
       NormConv2d(64, 128, 5, 2, padding=(2,2)),
@@ -61,8 +74,25 @@ if __name__ == "__main__":
   env = gym.make('ALE/Pong-v5')
   obs, info = env.reset()
 
+  actor = Actor()
   encoder = Encoder()
   decoder = Decoder()
+  dyn = RSSM()
+
+  # TODO: confirm that assigning to transpose like this is correct
+  assigns = {
+    "agent/actor/h0/kernel": actor.mlp[0].weight.T,
+    "agent/actor/h0/bias": actor.mlp[0].bias,
+    "agent/actor/h0/norm/scale": actor.mlp[1].weight,
+    "agent/actor/h1/kernel": actor.mlp[3].weight.T,
+    "agent/actor/h1/bias": actor.mlp[3].bias,
+    "agent/actor/h1/norm/scale": actor.mlp[4].weight,
+    "agent/actor/h2/kernel": actor.mlp[6].weight.T,
+    "agent/actor/h2/bias": actor.mlp[6].bias,
+    "agent/actor/h2/norm/scale": actor.mlp[7].weight,
+    "agent/actor/action/out/kernel": actor.mlp[9].weight.T,
+    "agent/actor/action/out/bias": actor.mlp[9].bias,
+  }
 
   dat = pickle.load(open("checkpoint.ckpt", "rb"))
   for k, v in dat['agent'].items():
@@ -74,6 +104,7 @@ if __name__ == "__main__":
         if k.endswith('scale'): m.conv[int(k.split(s)[1].split("/")[0])].scale.assign(v)
     if k == 'agent/dec/imgout/kernel': decoder.imgout.weight.assign(v.transpose(2,3,0,1))
     if k == 'agent/dec/imgout/bias': decoder.imgout.bias.assign(v)
+    if k in assigns: assigns[k].assign(v)
 
   out = encoder(preprocess(obs, size=(96,96)).unsqueeze(0))
   print(out.shape)
