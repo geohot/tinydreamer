@@ -135,26 +135,77 @@ if __name__ == "__main__":
   obs, reward, terminated, truncated, info = env.step(0)
   img_1 = preprocess(obs)
 
+  import pygame
+  pygame.init()
+  screen = pygame.display.set_mode((64*8, 64*8))
+
+  def draw(x:Tensor):
+    surf = pygame.surfarray.make_surface((x[0, 0].permute(2,1,0)*256).cast('uint8').repeat_interleave(8, 0).repeat_interleave(8, 1).numpy())
+    screen.blit(surf, (0, 0))
+    pygame.display.flip()
+
+  def getkey():
+    pygame.event.clear()
+    while True:
+      event = pygame.event.wait()
+      if event.type == pygame.QUIT:
+        pygame.quit()
+      elif event.type == pygame.KEYDOWN:
+        print(event.key)
+        if event.key == pygame.K_w: return 2
+        if event.key == pygame.K_s: return 5
+
+  # roll out down
+
+  imgs = [img_0]
+  transformer_tokens = Tensor.zeros(1, 0, EMBED_DIM)
+  #for i in range(10):
+  while 1:
+    draw(img_0)
+    act = getkey()
+    frames_emb = img_0.sequential(model.world_model.frame_cnn)[:, 0]
+    act_tokens_emb = model.world_model.act_emb(Tensor([[act]]))
+    print(transformer_tokens.shape, frames_emb.shape, act_tokens_emb.shape)
+    transformer_tokens = transformer_tokens.cat(frames_emb, act_tokens_emb, dim=1).contiguous()
+    latents = []
+    for i in range(4):
+      out = model.world_model.transformer(transformer_tokens)
+      logits_latents = model.world_model.head_latents(out[:, -1:], 0, 0)[0]
+      latent = logits_latents.exp().softmax().multinomial().flatten()
+      latents.append(latent)
+      transformer_tokens = transformer_tokens.cat(model.world_model.latents_emb(latent), dim=1)
+    latents = model.tokenizer.quantizer.embed_tokens(Tensor.cat(*latents)).reshape((1, 1, 4, 1024))
+    qq = rearrange(latents, 'b t (h w) (k l e) -> b t e (h k) (w l)',
+                  h=model.tokenizer.tokens_grid_res, k=model.tokenizer.token_res, l=model.tokenizer.token_res)
+    img_1_pred = model.tokenizer.decode(img_0, Tensor([[act]]), qq, should_clamp=True)
+    imgs.append(img_1_pred)
+    img_0 = img_1_pred
+  #plt.imshow(Tensor.cat(*[x[0, 0].permute(1,2,0) for x in imgs], dim=1).numpy())
+  #plt.show()
+
+  exit(0)
+
+
+  real_q = model.tokenizer(img_0, Tensor([[act]]), img_1)
+  print("real tokens", real_q.tokens.numpy())
+
   frames_emb = img_0.sequential(model.world_model.frame_cnn)
   act_tokens_emb = rearrange(model.world_model.act_emb(Tensor([[act]])), 'b t e -> b t 1 e')
   print(frames_emb.shape, act_tokens_emb.shape)
   tokens = Tensor.cat(frames_emb, act_tokens_emb, dim=2)[:, 0]
+  latents = []
   for i in range(4):
     out = model.world_model.transformer(tokens)
-    tokens = out.cat(tokens[:, -1:], dim=1)
-  logits_latents = model.world_model.head_latents(tokens[:, 2:], 0, 0)[0]
-  tokens = logits_latents.exp().softmax().multinomial().flatten()
-  print("tokens", tokens.shape)
-  print(model.tokenizer.quantizer.codebook.shape)
+    logits_latents = model.world_model.head_latents(out[:, -1:], 0, 0)[0]
+    latent = logits_latents.exp().softmax().multinomial().flatten()
+    latents.append(latent)
+    emb_latent = model.world_model.latents_emb(latent)
+    tokens = tokens.cat(emb_latent, dim=1)
+
+  #tokens = real_q.tokens.flatten()
+  tokens = Tensor.cat(*latents)
+  print("tokens", tokens.shape, tokens.numpy())
   latents = model.tokenizer.quantizer.embed_tokens(tokens).reshape((1, 1, 4, 1024))
-
-  print(latents.shape)
-  print(latents.numpy())
-
-  real_q = model.tokenizer(img_0, Tensor([[act]]), img_1)
-  print(real_q.q.shape)
-  print(real_q.q.numpy())
-  #latents = real_q.q
 
   qq = rearrange(latents, 'b t (h w) (k l e) -> b t e (h k) (w l)',
                  h=model.tokenizer.tokens_grid_res, k=model.tokenizer.token_res, l=model.tokenizer.token_res)

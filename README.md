@@ -16,3 +16,10 @@ This is designed to run on a tinybox, either red or green, with just `./train.py
 ## delta-iris
 
 Might be a better choice, the repo is a lot easier to read. https://github.com/vmicheli/delta-iris
+
+Three models:
+* actor_critic (two copies, model and target_model)
+* world_model
+  * transformer takes in (frames_emb x1, act_tokens_emb x1, latents_emb x4)
+  * decoder is 84 channels, 16 for prev_frame, 4 for action, and 64 for latents
+* tokenizer
