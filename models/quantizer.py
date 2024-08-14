@@ -37,3 +37,6 @@ class Quantizer:
     tokens = rearrange(tokens, '(b t k) -> b t k', b=b, k=k)
 
     return QuantizerOutput(q, tokens, losses, metrics)
+
+  def embed_tokens(self, tokens: Tensor) -> Tensor:
+    return self.post_quant_proj(self.codebook[tokens])
