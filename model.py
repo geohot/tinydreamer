@@ -1,4 +1,4 @@
-from typing import List, Dict
+from typing import List, Dict, Optional, Tuple
 import math
 from dataclasses import dataclass
 from tinygrad import Tensor,nn
@@ -152,29 +152,174 @@ class Tokenizer:
   def __call__(self, x: Tensor) -> Tensor:
     return self.frame_cnn(x)
 
-# TODO: this should be in tinygrad
+EMBED_DIM = 256
+
+class MLPLayer:
+  def __init__(self):
+    self.ln = nn.LayerNorm(EMBED_DIM)
+    self.mlp = [nn.Linear(EMBED_DIM, 4*EMBED_DIM), Tensor.gelu, nn.Linear(4*EMBED_DIM, EMBED_DIM)]
+  def __call__(self, x:Tensor): return x + self.ln(x).sequential(self.mlp)
+
+class Attention:
+  def __init__(self):
+    self.proj = nn.Linear(EMBED_DIM, EMBED_DIM)
+    self.num_heads = 4
+  def __call__(self, q:Tensor, k:Tensor, v:Tensor) -> Tensor:
+    q: Tensor = rearrange(q, 'b q (h e) -> b h q e', h=self.num_heads)
+    k = rearrange(k, 'b k (h e) -> b h k e', h=self.num_heads)
+    v = rearrange(v, 'b k (h d) -> b h k d', h=self.num_heads)
+    y = q.scaled_dot_product_attention(k, v, is_causal=True)
+    y = rearrange(y, 'b h q d -> b q (h d)')
+    return self.proj(y)
+
+class SelfAttentionLayer:
+  def __init__(self):
+    self.ln = nn.LayerNorm(EMBED_DIM)
+    self.query = nn.Linear(EMBED_DIM, EMBED_DIM)
+    self.key = nn.Linear(EMBED_DIM, EMBED_DIM)
+    self.value = nn.Linear(EMBED_DIM, EMBED_DIM)
+    self.attention = Attention()
+  def __call__(self, inputs:Tensor) -> Tensor:
+    x = self.ln(inputs)
+    q = self.query(x)
+    k = self.key(x)
+    v = self.value(x)
+    return inputs + self.attention(q, k, v)
+
+class EncoderLayer:
+  def __init__(self):
+    self.sa = SelfAttentionLayer()
+    self.mlp = MLPLayer()
+  def __call__(self, x:Tensor) -> Tensor: return self.mlp(self.sa(x))
+
+class TransformerEncoder:
+  def __init__(self):
+    self.pos_emb = nn.Embedding(156, EMBED_DIM)
+    self.ln = nn.LayerNorm(EMBED_DIM)
+    self.blocks = [EncoderLayer() for _ in range(3)]
+  def __call__(self, x:Tensor) -> Tensor:
+    assert x.ndim == 3 and x.size(2) == EMBED_DIM # (B, TK, E)
+    y = x + self.pos_emb(Tensor.arange(x.size(1)))
+    for i, block in enumerate(self.blocks):
+      y = block(y)
+    y = self.ln(y)
+    return y
+
+@dataclass
+class WorldModelOutput:
+  output_sequence: Tensor
+  logits_latents: Tensor
+  logits_rewards: Tensor
+  logits_ends: Tensor
+
+class Head:
+  def __init__(self, output_dim):
+    self.head_module = [
+      nn.Linear(EMBED_DIM, EMBED_DIM), Tensor.relu,
+      nn.Linear(EMBED_DIM, output_dim)
+    ]
+  def __call__(self, outputs:Tensor, num_steps, prev_steps):
+    return outputs.sequential(self.head_module)
+
+class WorldModel:
+  def __init__(self):
+    self.frame_cnn = [FrameEncoder([3,32,64,128,4]), lambda x: rearrange(x, 'b t c h w -> b t 1 (h w c)'), nn.LayerNorm(EMBED_DIM)]
+    self.act_emb = nn.Embedding(6, EMBED_DIM)
+    self.latents_emb = nn.Embedding(1024, EMBED_DIM)
+    self.transformer = TransformerEncoder()
+    self.head_latents = Head(1024)
+    self.head_rewards = Head(3)
+    self.head_ends = Head(2)
+
+  def __call__(self, sequence:Tensor) -> WorldModelOutput:
+    num_steps, prev_steps = 0, 0
+    outputs = self.transformer(sequence)
+
+    logits_latents = self.head_latents(outputs, num_steps, prev_steps)
+    logits_rewards = self.head_rewards(outputs, num_steps, prev_steps)
+    logits_ends = self.head_ends(outputs, num_steps, prev_steps)
+
+    return WorldModelOutput(outputs, logits_latents, logits_rewards, logits_ends)
+
+# we don't have this in our nn library. TODO: add it?
+class LSTMCell:
+  def __init__(self):
+    self.weight_ih = Tensor.zeros(2048, 1024)
+    self.weight_hh = Tensor.zeros(2048, 512)
+    self.bias_ih = Tensor.zeros(2048)
+    self.bias_hh = Tensor.zeros(2048)
+  def __call__(self, x:Tensor, h:Tensor, c:Tensor) -> Tensor:
+    gates = x @ self.weight_ih.T + self.bias_ih + h @ self.weight_hh.T + self.bias_hh
+    i, f, g, o = gates.split([512, 512, 512, 512], dim=1)  # TODO: axis
+    i, f, g, o = i.sigmoid(), f.sigmoid(), g.tanh(), o.sigmoid()
+    new_c = f * c + i * g
+    new_h = o * new_c.tanh()
+    # contiguous prevents buildup
+    return (new_h.contiguous(), new_c.contiguous())
+
+@dataclass
+class ActorCriticOutput:
+  logits_actions: Tensor
+  logits_values: Tensor
+
+class CnnLstmActorCritic:
+  def __init__(self, num_actions):
+    self.lstm_dim = 512
+    self.hx, self.cx = None, None
+    self.cnn = [FrameEncoder([3,32,64,128,16]), lambda x: rearrange(x, 'b t c h w -> (b t) (h w c)')]
+    self.actor_linear = nn.Linear(self.lstm_dim, num_actions)
+    self.critic_linear = nn.Linear(self.lstm_dim, 1)
+    self.lstm = LSTMCell()
+
+  def __call__(self, x:Tensor) -> ActorCriticOutput:
+    if self.hx is None: self.hx, self.cx = Tensor.zeros(512), Tensor.zeros(512)
+    x = x.sequential(self.cnn)
+    self.hx, self.cx = self.lstm(x, self.hx, self.cx)
+    logits_actions = rearrange(self.actor_linear(self.hx), 'b a -> b 1 a')
+    logits_values = rearrange(self.critic_linear(self.hx), 'b c -> b 1 c')
+    return ActorCriticOutput(logits_actions, logits_values)
+
+class Model:
+  def __init__(self):
+    self.world_model = WorldModel()
+    self.tokenizer = Tokenizer()
+    self.actor_critic = {"model": CnnLstmActorCritic(6), "target_model": CnnLstmActorCritic(6)}
+
+# TODO: this should be written in tinygrad
 def preprocess(obs, size=(64, 64)):
   image = Image.fromarray(obs).resize(size, Image.NEAREST)
   return Tensor(np.array(image), dtype='float32').permute(2,0,1).reshape(1,1,3,64,64) / 256.0
 
 if __name__ == "__main__":
-  env = gym.make('ALE/Pong-v5')
+  env = gym.make('PongNoFrameskip-v4', render_mode="human")
   obs, info = env.reset()
 
-  model = Tokenizer()
+  model = Model()
 
   # scp t18:~/build/delta-iris/outputs/2024-08-13/20-34-53/checkpoints/last.pt .
   dat = nn.state.torch_load("last.pt")
-  wm = {}
-  for k,v in dat.items():
-    if k.startswith("tokenizer.") or True:
-      print(k, v.shape)
-      wm[k[len("tokenizer."):]] = v
-  print(len(wm))
-  for k in nn.state.get_state_dict(model): print(k)
-  nn.state.load_state_dict(model, wm)
+  for k,v in dat.items(): print(k, v.shape)
+  nn.state.load_state_dict(model, dat)
 
-  img_0 = preprocess(obs)
+
+  for i in range(1000):
+    img_0 = preprocess(obs)
+    x = model.actor_critic['target_model'](img_0)
+    action = x.logits_actions.exp().softmax().flatten().multinomial()
+    obs, reward, terminated, truncated, info = env.step(action.item())
+
+  """
+  x = rearrange(img_0.sequential(model.world_model.frame_cnn), 'b 1 k e -> b k e')
+  a_choice = env.action_space.sample()
+  a = model.world_model.act_emb(Tensor([a_choice]))
+  # TODO: Tensor.cat((x, a), dim=1) should work also?
+  # or should we crack down on all these things...
+  # actually probably not on that one, first arg should be Tensor
+  output = model.world_model(x.cat(a, dim=1))
+  """
+
+  exit(0)
+
 
   import matplotlib.pyplot as plt
 
