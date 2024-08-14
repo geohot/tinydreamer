@@ -1,117 +1,16 @@
 from typing import List, Dict, Optional, Tuple
 import math
 from dataclasses import dataclass
-from tinygrad import Tensor,nn
+from tinygrad import Tensor, nn, TinyJit
 from einops import rearrange
 import gymnasium as gym
 from PIL import Image
 import numpy as np
+from models.lstm import LSTMCell
+from models.frame import FrameDecoder, FrameEncoder
+from models.transformer import EMBED_DIM, TransformerEncoder, Head
+from models.quantizer import Quantizer
 # TODO: i like torches tensors that include dtype in the type
-
-class Downsample:
-  def __init__(self, num_channels: int) -> None:
-    self.conv = nn.Conv2d(num_channels, num_channels, kernel_size=2, stride=2, padding=0)
-  def __call__(self, x: Tensor) -> Tensor: return self.conv(x)
-
-class Upsample:
-  def __init__(self, num_channels: int) -> None:
-    self.conv = nn.Conv2d(num_channels, num_channels, kernel_size=3, stride=1, padding=1)
-  def __call__(self, x: Tensor) -> Tensor:
-    # TODO: is this fast?
-    # AssertionError: only supports linear interpolate
-    #x = x.interpolate([s*2 for s in x.size()], mode="nearest")
-    x = rearrange(x, 'b c h w -> b c h 1 w 1').expand(x.shape[0], x.shape[1], x.shape[2], 2, x.shape[3], 2) \
-      .reshape(x.shape[0], x.shape[1], x.shape[2]*2, x.shape[3]*2)
-    return self.conv(x)
-
-class ResidualBlock:
-  def __init__(self, in_channels: int, out_channels: int, num_groups_norm: int = 32) -> None:
-    self.f = [
-      nn.GroupNorm(num_groups_norm, in_channels),
-      Tensor.silu,
-      nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=1, padding=1),
-      nn.GroupNorm(num_groups_norm, out_channels),
-      Tensor.silu,
-      nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=1, padding=1),
-    ]
-    self.skip_projection = (lambda x: x) if in_channels == out_channels else nn.Conv2d(in_channels, out_channels, kernel_size=1)
-  def __call__(self, x: Tensor) -> Tensor: return self.skip_projection(x) + x.sequential(self.f)
-
-class FrameDecoder:
-  def __init__(self):
-    self.decoder = [
-      nn.Conv2d(84, 256, kernel_size=3, stride=1, padding=1),
-      ResidualBlock(256, 128), Upsample(128),
-      ResidualBlock(128, 128), Upsample(128),
-      ResidualBlock(128, 64),
-      ResidualBlock(64, 64), Upsample(64),
-      ResidualBlock(64, 64),
-      nn.GroupNorm(num_groups=32, num_channels=64),
-      Tensor.silu,
-      nn.Conv2d(64, 3, kernel_size=3, stride=1, padding=1),
-    ]
-
-  def __call__(self, x:Tensor) -> Tensor:
-    b, t, _, _, _ = x.size()
-    x = rearrange(x, 'b t c h w -> (b t) c h w')
-    x = x.sequential(self.decoder)
-    x = rearrange(x, '(b t) c h w -> b t c h w', b=b, t=t)
-    return x
-
-class FrameEncoder:
-  def __init__(self, channels: List[int]):
-    self.encoder = [
-      nn.Conv2d(channels[0], channels[1], kernel_size=3, stride=1, padding=1),
-      ResidualBlock(channels[1], channels[1]), Downsample(channels[1]),
-      ResidualBlock(channels[1], channels[1]),
-      ResidualBlock(channels[1], channels[2]), Downsample(channels[2]),
-      ResidualBlock(channels[2], channels[2]), Downsample(channels[2]),
-      ResidualBlock(channels[2], channels[3]),
-      nn.GroupNorm(num_groups=32, num_channels=channels[3]),
-      Tensor.silu,
-      nn.Conv2d(channels[3], channels[4], kernel_size=3, stride=1, padding=1),
-    ]
-
-  def __call__(self, x: Tensor) -> Tensor:
-    b, t, _, _, _ = x.size()
-    x = rearrange(x, 'b t c h w -> (b t) c h w')
-    x = x.sequential(self.encoder)
-    x = rearrange(x, '(b t) c h w -> b t c h w', b=b, t=t)
-    return x
-
-@dataclass
-class QuantizerOutput:
-  q: Tensor
-  tokens: Tensor
-  loss: Dict[str, Tensor]
-  metrics: Dict[str, float]
-
-class Quantizer:
-  def __init__(self, codebook_size: int, codebook_dim: int, input_dim: int):
-    assert math.log2(codebook_size).is_integer()
-    self.pre_quant_proj = nn.Linear(input_dim, codebook_dim)
-    self.post_quant_proj = nn.Linear(codebook_dim, input_dim)
-    self.codebook = Tensor.uniform(codebook_size, codebook_dim, low=-1.0 / codebook_size, high=1.0 / codebook_size)
-
-  def __call__(self, z:Tensor) -> QuantizerOutput:
-    z = self.pre_quant_proj(z)
-    b, k = z.size(0), z.size(2)
-    z = rearrange(z, 'b t k e -> (b t k) e')
-
-    cosine_similarity = Tensor.einsum('n e, c e -> n c', z, self.codebook)
-    tokens = cosine_similarity.argmax(axis=-1)  # TODO: support both axis and dim
-    q = self.codebook[tokens]
-
-    losses = {'commitment_loss': 0.02 * (z - q.detach()).pow(2).mean()}
-    metrics = {}
-
-    q = z + (q - z).detach()
-    q = self.post_quant_proj(q)
-
-    q = rearrange(q, '(b t k) e -> b t k e', b=b, k=k)
-    tokens = rearrange(tokens, '(b t k) -> b t k', b=b, k=k)
-
-    return QuantizerOutput(q, tokens, losses, metrics)
 
 class Tokenizer:
   def __init__(self):
@@ -152,74 +51,12 @@ class Tokenizer:
   def __call__(self, x: Tensor) -> Tensor:
     return self.frame_cnn(x)
 
-EMBED_DIM = 256
-
-class MLPLayer:
-  def __init__(self):
-    self.ln = nn.LayerNorm(EMBED_DIM)
-    self.mlp = [nn.Linear(EMBED_DIM, 4*EMBED_DIM), Tensor.gelu, nn.Linear(4*EMBED_DIM, EMBED_DIM)]
-  def __call__(self, x:Tensor): return x + self.ln(x).sequential(self.mlp)
-
-class Attention:
-  def __init__(self):
-    self.proj = nn.Linear(EMBED_DIM, EMBED_DIM)
-    self.num_heads = 4
-  def __call__(self, q:Tensor, k:Tensor, v:Tensor) -> Tensor:
-    q: Tensor = rearrange(q, 'b q (h e) -> b h q e', h=self.num_heads)
-    k = rearrange(k, 'b k (h e) -> b h k e', h=self.num_heads)
-    v = rearrange(v, 'b k (h d) -> b h k d', h=self.num_heads)
-    y = q.scaled_dot_product_attention(k, v, is_causal=True)
-    y = rearrange(y, 'b h q d -> b q (h d)')
-    return self.proj(y)
-
-class SelfAttentionLayer:
-  def __init__(self):
-    self.ln = nn.LayerNorm(EMBED_DIM)
-    self.query = nn.Linear(EMBED_DIM, EMBED_DIM)
-    self.key = nn.Linear(EMBED_DIM, EMBED_DIM)
-    self.value = nn.Linear(EMBED_DIM, EMBED_DIM)
-    self.attention = Attention()
-  def __call__(self, inputs:Tensor) -> Tensor:
-    x = self.ln(inputs)
-    q = self.query(x)
-    k = self.key(x)
-    v = self.value(x)
-    return inputs + self.attention(q, k, v)
-
-class EncoderLayer:
-  def __init__(self):
-    self.sa = SelfAttentionLayer()
-    self.mlp = MLPLayer()
-  def __call__(self, x:Tensor) -> Tensor: return self.mlp(self.sa(x))
-
-class TransformerEncoder:
-  def __init__(self):
-    self.pos_emb = nn.Embedding(156, EMBED_DIM)
-    self.ln = nn.LayerNorm(EMBED_DIM)
-    self.blocks = [EncoderLayer() for _ in range(3)]
-  def __call__(self, x:Tensor) -> Tensor:
-    assert x.ndim == 3 and x.size(2) == EMBED_DIM # (B, TK, E)
-    y = x + self.pos_emb(Tensor.arange(x.size(1)))
-    for i, block in enumerate(self.blocks):
-      y = block(y)
-    y = self.ln(y)
-    return y
-
 @dataclass
 class WorldModelOutput:
   output_sequence: Tensor
   logits_latents: Tensor
   logits_rewards: Tensor
   logits_ends: Tensor
-
-class Head:
-  def __init__(self, output_dim):
-    self.head_module = [
-      nn.Linear(EMBED_DIM, EMBED_DIM), Tensor.relu,
-      nn.Linear(EMBED_DIM, output_dim)
-    ]
-  def __call__(self, outputs:Tensor, num_steps, prev_steps):
-    return outputs.sequential(self.head_module)
 
 class WorldModel:
   def __init__(self):
@@ -240,22 +77,6 @@ class WorldModel:
     logits_ends = self.head_ends(outputs, num_steps, prev_steps)
 
     return WorldModelOutput(outputs, logits_latents, logits_rewards, logits_ends)
-
-# we don't have this in our nn library. TODO: add it?
-class LSTMCell:
-  def __init__(self):
-    self.weight_ih = Tensor.zeros(2048, 1024)
-    self.weight_hh = Tensor.zeros(2048, 512)
-    self.bias_ih = Tensor.zeros(2048)
-    self.bias_hh = Tensor.zeros(2048)
-  def __call__(self, x:Tensor, h:Tensor, c:Tensor) -> Tensor:
-    gates = x @ self.weight_ih.T + self.bias_ih + h @ self.weight_hh.T + self.bias_hh
-    i, f, g, o = gates.split([512, 512, 512, 512], dim=1)  # TODO: axis
-    i, f, g, o = i.sigmoid(), f.sigmoid(), g.tanh(), o.sigmoid()
-    new_c = f * c + i * g
-    new_h = o * new_c.tanh()
-    # contiguous prevents buildup
-    return (new_h.contiguous(), new_c.contiguous())
 
 @dataclass
 class ActorCriticOutput:
@@ -285,7 +106,7 @@ class Model:
     self.tokenizer = Tokenizer()
     self.actor_critic = {"model": CnnLstmActorCritic(6), "target_model": CnnLstmActorCritic(6)}
 
-# TODO: this should be written in tinygrad
+# TODO: this should be written in tinygrad. tinygrad needs to support NEAREST
 def preprocess(obs, size=(64, 64)):
   image = Image.fromarray(obs).resize(size, Image.NEAREST)
   return Tensor(np.array(image), dtype='float32').permute(2,0,1).reshape(1,1,3,64,64) / 256.0
@@ -301,11 +122,16 @@ if __name__ == "__main__":
   for k,v in dat.items(): print(k, v.shape)
   nn.state.load_state_dict(model, dat)
 
+  # TODO: is this correct with the LSTM
+  #@TinyJit
+  def get_action(img_0:Tensor) -> Tensor:
+    x = model.actor_critic['target_model'](img_0)
+    action = x.logits_actions.exp().softmax().flatten().multinomial()
+    return action
 
   for i in range(1000):
     img_0 = preprocess(obs)
-    x = model.actor_critic['target_model'](img_0)
-    action = x.logits_actions.exp().softmax().flatten().multinomial()
+    action = get_action(img_0)
     obs, reward, terminated, truncated, info = env.step(action.item())
 
   """

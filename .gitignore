@@ -1,3 +1,4 @@
 *.ckpt
 *_jaxpr*
-last.pt
+*.pt
+*.pyc
