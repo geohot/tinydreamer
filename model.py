@@ -6,10 +6,11 @@ from einops import rearrange
 import gymnasium as gym
 from PIL import Image
 import numpy as np
-from models.lstm import LSTMCell
+
 from models.frame import FrameDecoder, FrameEncoder
 from models.transformer import EMBED_DIM, TransformerEncoder, Head
 from models.quantizer import Quantizer
+
 # TODO: i like torches tensors that include dtype in the type
 
 class Tokenizer:
@@ -90,12 +91,11 @@ class CnnLstmActorCritic:
     self.cnn = [FrameEncoder([3,32,64,128,16]), lambda x: rearrange(x, 'b t c h w -> (b t) (h w c)')]
     self.actor_linear = nn.Linear(self.lstm_dim, num_actions)
     self.critic_linear = nn.Linear(self.lstm_dim, 1)
-    self.lstm = LSTMCell()
+    self.lstm = nn.LSTMCell(1024, self.lstm_dim)
 
   def __call__(self, x:Tensor) -> ActorCriticOutput:
-    if self.hx is None: self.hx, self.cx = Tensor.zeros(512), Tensor.zeros(512)
     x = x.sequential(self.cnn)
-    self.hx, self.cx = self.lstm(x, self.hx, self.cx)
+    self.hx, self.cx = self.lstm(x, (self.hx, self.cx) if self.hx is not None else None)
     logits_actions = rearrange(self.actor_linear(self.hx), 'b a -> b 1 a')
     logits_values = rearrange(self.critic_linear(self.hx), 'b c -> b 1 c')
     return ActorCriticOutput(logits_actions, logits_values)
