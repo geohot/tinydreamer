@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 from typing import List, Dict, Optional, Tuple
 import math
 from dataclasses import dataclass
@@ -72,8 +73,6 @@ class Tokenizer:
   def decode(self, x1: Tensor, a: Tensor, q2: Tensor, should_clamp: bool = False) -> Tensor:
     x1_emb = self.frame_cnn(x1)
     a_emb = rearrange(self.decoder_act_emb(a), 'b t (c h w) -> b t c h w', c=4, h=x1_emb.size(3))
-    print(x1_emb.shape, a_emb.shape, q2.shape)
-
     decoder_input = Tensor.cat(x1_emb, a_emb, q2, dim=2)
     r = self.decoder(decoder_input)
     r = r.clamp(0, 1).mul(255).round().div(255) if should_clamp else r
@@ -150,7 +149,7 @@ def preprocess(obs, size=(64, 64)):
   return Tensor(np.array(image), dtype='float32').permute(2,0,1).reshape(1,1,3,64,64) / 256.0
 
 if __name__ == "__main__":
-  env = MaxAndSkipEnv(gym.make('PongNoFrameskip-v4', render_mode="human"))
+  env = MaxAndSkipEnv(gym.make('PongNoFrameskip-v4')) #, render_mode="human"))
   obs, info = env.reset()
 
   model = Model()
@@ -160,7 +159,6 @@ if __name__ == "__main__":
   for k,v in dat.items(): print(k, v.shape)
   nn.state.load_state_dict(model, dat)
 
-  """
   import pygame
   pygame.init()
   screen = pygame.display.set_mode((64*8*2, 64*8))
@@ -179,17 +177,33 @@ if __name__ == "__main__":
         pygame.quit()
       elif event.type == pygame.KEYDOWN:
         print(event.key)
+        if event.key == pygame.K_q: return 0
         if event.key == pygame.K_w: return 2
         if event.key == pygame.K_s: return 5
 
+  # TODO: is this correct with the LSTM and TinyJIT
+  #@TinyJit
+  def get_action(img_0:Tensor) -> Tensor:
+    x = model.actor_critic['target_model'](img_0)
+    action = x.logits_actions.exp().softmax().flatten().multinomial()
+    return action.item()
+
   # roll out down
-  img_0 = preprocess(obs)
-  imgs = [img_0]
-  transformer_tokens = Tensor.zeros(1, 0, EMBED_DIM)
+  transformer_tokens = None
   while 1:
-    draw(Tensor.cat(img_0, preprocess(obs), dim=4))
-    act = env.action_space.sample()
+    cur_img = preprocess(obs)
+    act = get_action(cur_img)
+    #act = getkey()
+    #act = env.action_space.sample()
     obs, reward, terminated, truncated, info = env.step(act)
+
+    # resync every 20 frames
+    if transformer_tokens is None or transformer_tokens.shape[1] >= 20*6:
+      img_0 = cur_img
+      transformer_tokens = Tensor.zeros(1, 0, EMBED_DIM)
+
+    draw(Tensor.cat(img_0, cur_img, dim=4))
+
     frames_emb = img_0.sequential(model.world_model.frame_cnn)[:, 0]
     act_tokens_emb = model.world_model.act_emb(Tensor([[act]]))
     print(transformer_tokens.shape, frames_emb.shape, act_tokens_emb.shape)
@@ -205,20 +219,7 @@ if __name__ == "__main__":
     qq = rearrange(latents, 'b t (h w) (k l e) -> b t e (h k) (w l)',
                   h=model.tokenizer.tokens_grid_res, k=model.tokenizer.token_res, l=model.tokenizer.token_res)
     img_1_pred = model.tokenizer.decode(img_0, Tensor([[act]]), qq, should_clamp=True)
-    imgs.append(img_1_pred)
     img_0 = img_1_pred
-  """
 
-  # TODO: is this correct with the LSTM
-  #@TinyJit
-  def get_action(img_0:Tensor) -> Tensor:
-    x = model.actor_critic['target_model'](img_0)
-    action = x.logits_actions.exp().softmax().flatten().multinomial()
-    return action
-
-  for i in range(1000):
-    img_0 = preprocess(obs)
-    action = get_action(img_0)
-    obs, reward, terminated, truncated, info = env.step(action.item())
 
   exit(0)

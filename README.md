@@ -20,6 +20,10 @@ Might be a better choice, the repo is a lot easier to read. https://github.com/v
 Three models:
 * actor_critic (two copies, model and target_model)
 * world_model
-  * transformer takes in (frames_emb x1, act_tokens_emb x1, latents_emb x4)
-  * decoder is 84 channels, 16 for prev_frame, 4 for action, and 64 for latents
+  * transformer takes in (frames_emb x1, act_tokens_emb x1, latents_emb x4) x many
+  * frame_cnn (FrameEncoder), output 4 channels
 * tokenizer
+  * frame_cnn (FrameEncoder), output 16 channels
+  * encoder is 7 channels, 3 for prev_frame, 1 for action, and 3 for frame (FrameEncoder), output 64 channels for quantizer
+  * decoder is 84 channels, 16 for prev_frame, 4 for action, and 64 for latents. it outputs an image (FrameDecoder)
+  * quantizer
