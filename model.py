@@ -164,8 +164,11 @@ if __name__ == "__main__":
 
   # scp t18:~/build/delta-iris/outputs/2024-08-13/20-34-53/checkpoints/last.pt .
   dat = nn.state.torch_load("last.pt")
-  #for k,v in dat.items(): print(k, v.shape)
   nn.state.load_state_dict(model, dat)
+
+  model_state = nn.state.get_state_dict(model)
+  for k,v in dat.items():
+    if k not in model_state: print("DIDN'T LOAD", k, v.shape)
 
   import pygame
   pygame.init()
