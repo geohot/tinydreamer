@@ -48,10 +48,10 @@ def main(cfg: DictConfig) -> None:
   real_hx, real_cx = agent.actor_critic.model.lstm(x)
   x = agent.actor_critic.model.cnn(torch.Tensor(img_1.numpy()))
   real_hx_2, real_cx_2 = agent.actor_critic.model.lstm(x, (real_hx, real_cx))
-  np.testing.assert_allclose(test_hx.numpy(), real_hx.numpy(), atol=1e-4)
-  np.testing.assert_allclose(test_cx.numpy(), real_cx.numpy(), atol=1e-4)
-  np.testing.assert_allclose(test_hx_2.numpy(), real_hx_2.numpy(), atol=1e-4)
-  np.testing.assert_allclose(test_cx_2.numpy(), real_cx_2.numpy(), atol=1e-4)
+  np.testing.assert_allclose(test_hx.numpy(), real_hx.numpy(), atol=1e-5)
+  np.testing.assert_allclose(test_cx.numpy(), real_cx.numpy(), atol=1e-5)
+  np.testing.assert_allclose(test_hx_2.numpy(), real_hx_2.numpy(), atol=1e-5)
+  np.testing.assert_allclose(test_cx_2.numpy(), real_cx_2.numpy(), atol=1e-5)
   print("PASS")
 
   print("testing worldmodel frame_cnn")
@@ -83,7 +83,7 @@ def main(cfg: DictConfig) -> None:
   print("testing tokenizer encode/decode")
   test_image = model.tokenizer.encode_decode(img_0, act, img_1)
   real_image = agent.tokenizer.encode_decode(torch.Tensor(img_0.numpy()), torch.Tensor(act.numpy()).long(), torch.Tensor(img_1.numpy()))
-  np.testing.assert_allclose(test_image.numpy(), real_image.numpy(), atol=1e-2)  # one is a tiny bit off
+  np.testing.assert_allclose(test_image.numpy(), real_image.numpy(), atol=1e-6)  # one is a tiny bit off
   print("PASS")
 
 

@@ -2,6 +2,7 @@
 from typing import List, Dict, Optional, Tuple
 import argparse
 import math
+import pygame
 from dataclasses import dataclass
 from tinygrad import Tensor, nn, TinyJit, dtypes
 from einops import rearrange
@@ -147,8 +148,8 @@ class Model:
 
 # TODO: this should be written in tinygrad. tinygrad needs to support NEAREST
 def preprocess(obs, size=(64, 64)):
-  image = Image.fromarray(obs).resize(size, Image.NEAREST)
-  return Tensor(np.array(image), dtype='float32').permute(2,0,1).reshape(1,1,3,64,64) / 256.0
+  image = Image.fromarray(obs).resize(size, Image.BILINEAR)
+  return Tensor(np.array(image), dtype='float32').permute(2,0,1).reshape(1,1,3,64,64) / 255.0
 
 if __name__ == "__main__":
   parser = argparse.ArgumentParser()
@@ -171,7 +172,6 @@ if __name__ == "__main__":
   for k,v in dat.items():
     if k not in model_state: print("DIDN'T LOAD", k, v.shape)
 
-  import pygame
   pygame.init()
   screen = pygame.display.set_mode((64*8*2, 64*8))
 
@@ -219,7 +219,7 @@ if __name__ == "__main__":
 
     if args.render == "worldmodel":
       # resync every 20 frames
-      if transformer_tokens is None or transformer_tokens.shape[1] >= 20*6:
+      if transformer_tokens is None or transformer_tokens.shape[1] > 25*6:
         img_0 = cur_img
         transformer_tokens = Tensor.zeros(1, 0, EMBED_DIM)
 
