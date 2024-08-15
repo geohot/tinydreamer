@@ -196,7 +196,7 @@ if __name__ == "__main__":
   # TODO: is this correct with the LSTM and TinyJIT
   #@TinyJit
   def get_action(img_0:Tensor) -> Tensor:
-    x = model.actor_critic['target_model'](img_0)
+    x = model.actor_critic['model'](img_0)
     action = x.logits_actions.exp().softmax().flatten().multinomial()
     return action.item()
 

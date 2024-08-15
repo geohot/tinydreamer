@@ -39,6 +39,40 @@ def main(cfg: DictConfig) -> None:
   obs, reward, terminated, truncated, info = env.step(act.item())
   img_1 = preprocess(obs)
 
+  print("testing actor critic")
+  model.actor_critic['model'](img_0)
+  test_hx, test_cx = model.actor_critic['model'].hx, model.actor_critic['model'].cx
+  model.actor_critic['model'](img_1)
+  test_hx_2, test_cx_2 = model.actor_critic['model'].hx, model.actor_critic['model'].cx
+  x = agent.actor_critic.model.cnn(torch.Tensor(img_0.numpy()))
+  real_hx, real_cx = agent.actor_critic.model.lstm(x)
+  x = agent.actor_critic.model.cnn(torch.Tensor(img_1.numpy()))
+  real_hx_2, real_cx_2 = agent.actor_critic.model.lstm(x, (real_hx, real_cx))
+  np.testing.assert_allclose(test_hx.numpy(), real_hx.numpy(), atol=1e-4)
+  np.testing.assert_allclose(test_cx.numpy(), real_cx.numpy(), atol=1e-4)
+  np.testing.assert_allclose(test_hx_2.numpy(), real_hx_2.numpy(), atol=1e-4)
+  np.testing.assert_allclose(test_cx_2.numpy(), real_cx_2.numpy(), atol=1e-4)
+  print("PASS")
+
+  print("testing worldmodel frame_cnn")
+  test_x_emb = img_0.sequential(model.world_model.frame_cnn)
+  real_x_emb = agent.world_model.frame_cnn(torch.Tensor(img_0.numpy()))
+  np.testing.assert_allclose(test_x_emb.numpy(), real_x_emb.numpy(), atol=1e-4)
+  print("PASS")
+
+  print("testing worldmodel act_emb")
+  test_a_emb = model.world_model.act_emb(act)
+  real_a_emb = agent.world_model.act_emb(torch.Tensor(act.numpy()).long())
+  np.testing.assert_allclose(test_a_emb.numpy(), real_a_emb.numpy(), atol=1e-6)
+  print("PASS")
+
+  print("testing transformer")
+  transformer_in = test_x_emb[0].cat(test_a_emb, dim=1)
+  test_tout = model.world_model.transformer(transformer_in)
+  real_tout = agent.world_model.transformer(torch.Tensor(transformer_in.numpy()))
+  np.testing.assert_allclose(test_tout.numpy(), real_tout.numpy(), atol=1e-2)  # this atol might not be okay
+  print("PASS")
+
   print("testing tokenizer")
   test_token = model.tokenizer(img_0, act, img_1)
   real_token = agent.tokenizer(torch.Tensor(img_0.numpy()), torch.Tensor(act.numpy()).long(), torch.Tensor(img_1.numpy()))
