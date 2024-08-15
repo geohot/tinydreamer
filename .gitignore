@@ -2,3 +2,5 @@
 *_jaxpr*
 *.pt
 *.pyc
+delta-iris
+outputs

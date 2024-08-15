@@ -41,9 +41,9 @@ class MaxAndSkipEnv(gym.Wrapper):
   def reset(self, **kwargs): return self.env.reset(**kwargs)
 
 
-from models.frame import FrameDecoder, FrameEncoder
-from models.transformer import EMBED_DIM, TransformerEncoder, Head
-from models.quantizer import Quantizer, QuantizerOutput
+from di.frame import FrameDecoder, FrameEncoder
+from di.transformer import EMBED_DIM, TransformerEncoder, Head
+from di.quantizer import Quantizer, QuantizerOutput
 
 # TODO: i like torches tensors that include dtype in the type
 
