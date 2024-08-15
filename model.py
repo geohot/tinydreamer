@@ -79,6 +79,7 @@ class Tokenizer:
     r = r.clamp(0, 1).mul(255).round().div(255) if should_clamp else r
     return r
 
+  @TinyJit
   def encode_decode(self, x1: Tensor, a: Tensor, x2: Tensor) -> Tensor:
     z = self.encode(x1, a, x2)
     z = rearrange(z, 'b t c (h k) (w l) -> b t (h w) (k l c)', k=self.token_res, l=self.token_res)
@@ -238,6 +239,6 @@ if __name__ == "__main__":
                     h=model.tokenizer.tokens_grid_res, k=model.tokenizer.token_res, l=model.tokenizer.token_res)
       img_0 = model.tokenizer.decode(img_0, Tensor([[act]]), qq, should_clamp=True)
     elif args.render == "tokenizer":
-      img_0 = model.tokenizer.encode_decode(img_0, Tensor([[act]]), preprocess(obs))
+      img_0 = model.tokenizer.encode_decode(cur_img, Tensor([[act]]), preprocess(obs))
     elif args.render == "none":
       img_0 = preprocess(obs)
