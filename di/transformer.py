@@ -49,15 +49,12 @@ class TransformerEncoder:
   def __call__(self, x:Tensor) -> Tensor:
     assert x.ndim == 3 and x.size(2) == EMBED_DIM # (B, TK, E)
     y = x + self.pos_emb(Tensor.arange(x.size(1)))
-    for i, block in enumerate(self.blocks):
-      y = block(y)
-    y = self.ln(y)
-    return y
+    return self.ln(y.sequential(self.blocks))
 
 class Head:
   def __init__(self, output_dim):
     self.head_module = [
       nn.Linear(EMBED_DIM, EMBED_DIM), Tensor.relu,
       nn.Linear(EMBED_DIM, output_dim)]
-  def __call__(self, outputs:Tensor, num_steps, prev_steps):
+  def __call__(self, outputs:Tensor):
     return outputs.sequential(self.head_module)

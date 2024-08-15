@@ -39,21 +39,6 @@ def main(cfg: DictConfig) -> None:
   obs, reward, terminated, truncated, info = env.step(act.item())
   img_1 = preprocess(obs)
 
-  print("testing actor critic")
-  model.actor_critic['model'](img_0)
-  test_hx, test_cx = model.actor_critic['model'].hx, model.actor_critic['model'].cx
-  model.actor_critic['model'](img_1)
-  test_hx_2, test_cx_2 = model.actor_critic['model'].hx, model.actor_critic['model'].cx
-  x = agent.actor_critic.model.cnn(torch.Tensor(img_0.numpy()))
-  real_hx, real_cx = agent.actor_critic.model.lstm(x)
-  x = agent.actor_critic.model.cnn(torch.Tensor(img_1.numpy()))
-  real_hx_2, real_cx_2 = agent.actor_critic.model.lstm(x, (real_hx, real_cx))
-  np.testing.assert_allclose(test_hx.numpy(), real_hx.numpy(), atol=1e-5)
-  np.testing.assert_allclose(test_cx.numpy(), real_cx.numpy(), atol=1e-5)
-  np.testing.assert_allclose(test_hx_2.numpy(), real_hx_2.numpy(), atol=1e-5)
-  np.testing.assert_allclose(test_cx_2.numpy(), real_cx_2.numpy(), atol=1e-5)
-  print("PASS")
-
   print("testing worldmodel frame_cnn")
   test_x_emb = img_0.sequential(model.world_model.frame_cnn)
   real_x_emb = agent.world_model.frame_cnn(torch.Tensor(img_0.numpy()))
@@ -86,6 +71,20 @@ def main(cfg: DictConfig) -> None:
   np.testing.assert_allclose(test_image.numpy(), real_image.numpy(), atol=1e-6)  # one is a tiny bit off
   print("PASS")
 
+  print("testing actor critic")
+  model.actor_critic['model'](img_0)
+  test_hx, test_cx = model.actor_critic['model'].hx, model.actor_critic['model'].cx
+  model.actor_critic['model'](img_1)
+  test_hx_2, test_cx_2 = model.actor_critic['model'].hx, model.actor_critic['model'].cx
+  x = agent.actor_critic.model.cnn(torch.Tensor(img_0.numpy()))
+  real_hx, real_cx = agent.actor_critic.model.lstm(x)
+  x = agent.actor_critic.model.cnn(torch.Tensor(img_1.numpy()))
+  real_hx_2, real_cx_2 = agent.actor_critic.model.lstm(x, (real_hx, real_cx))
+  np.testing.assert_allclose(test_hx.numpy(), real_hx.numpy(), atol=1e-5)
+  np.testing.assert_allclose(test_cx.numpy(), real_cx.numpy(), atol=1e-5)
+  np.testing.assert_allclose(test_hx_2.numpy(), real_hx_2.numpy(), atol=1e-5)
+  np.testing.assert_allclose(test_cx_2.numpy(), real_cx_2.numpy(), atol=1e-5)
+  print("PASS")
 
 if __name__ == "__main__":
   main()

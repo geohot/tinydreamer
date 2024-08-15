@@ -110,12 +110,12 @@ class WorldModel:
     self.head_ends = Head(2)
 
   def __call__(self, sequence:Tensor) -> WorldModelOutput:
-    num_steps, prev_steps = 0, 0
     outputs = self.transformer(sequence)
 
-    logits_latents = self.head_latents(outputs, num_steps, prev_steps)
-    logits_rewards = self.head_rewards(outputs, num_steps, prev_steps)
-    logits_ends = self.head_ends(outputs, num_steps, prev_steps)
+    # TODO: this should probably be sliced
+    logits_latents = self.head_latents(outputs)
+    logits_rewards = self.head_rewards(outputs)
+    logits_ends = self.head_ends(outputs)
 
     return WorldModelOutput(outputs, logits_latents, logits_rewards, logits_ends)
 
@@ -188,7 +188,6 @@ if __name__ == "__main__":
       if event.type == pygame.QUIT:
         pygame.quit()
       elif event.type == pygame.KEYDOWN:
-        print(event.key)
         if event.key == pygame.K_q: return 0
         if event.key == pygame.K_w: return 2
         if event.key == pygame.K_s: return 5
@@ -230,7 +229,7 @@ if __name__ == "__main__":
       latents = []
       for i in range(4):
         out = model.world_model.transformer(transformer_tokens)
-        logits_latents = model.world_model.head_latents(out[:, -1:], 0, 0)[0]
+        logits_latents = model.world_model.head_latents(out[:, -1:])[0]
         latent = logits_latents.exp().softmax().multinomial().flatten()
         latents.append(latent)
         transformer_tokens = transformer_tokens.cat(model.world_model.latents_emb(latent), dim=1)

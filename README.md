@@ -27,3 +27,13 @@ Three models:
   * encoder is 7 channels, 3 for prev_frame, 1 for action, and 3 for frame (FrameEncoder), output 64 channels for quantizer
   * decoder is 84 channels, 16 for prev_frame, 4 for action, and 64 for latents. it outputs an image (FrameDecoder)
   * quantizer
+
+Training:
+* Happens in three distinct phases
+  * First, tokenizer is trained. It outputs 4 (from a vocab of 1024, codebook dim of 64) tokens per delta image
+    * q = encoder(img_0, encoder_act_emb(a), img_1)
+    * decoder(frame_cnn(img_0), decoder_act_emb(a), q)
+  * Then, world model is trained
+    * transformer([frame_cnn(img_0), act_emb(a), latents_emb(tokens_from_encoder), ...])
+  * Last, actor critic is trained (in world model)
+
