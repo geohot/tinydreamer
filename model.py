@@ -1,12 +1,43 @@
 from typing import List, Dict, Optional, Tuple
 import math
 from dataclasses import dataclass
-from tinygrad import Tensor, nn, TinyJit
+from tinygrad import Tensor, nn, TinyJit, dtypes
 from einops import rearrange
 import gymnasium as gym
 from PIL import Image
 import numpy as np
 import matplotlib.pyplot as plt
+
+# copied from delta-iris
+class MaxAndSkipEnv(gym.Wrapper):
+  def __init__(self, env, skip=4):
+    """Return only every `skip`-th frame"""
+    gym.Wrapper.__init__(self, env)
+    assert skip > 0
+    # most recent raw observations (for max pooling across time steps)
+    self._obs_buffer = np.zeros((2,) + env.observation_space.shape, dtype=np.uint8)
+    self._skip = skip
+    self.max_frame = np.zeros(env.observation_space.shape, dtype=np.uint8)
+
+  def step(self, action):
+    """Repeat action, sum reward, and max over last observations."""
+    total_reward = 0.0
+    for i in range(self._skip):
+      obs, reward, terminated, truncated, info = self.env.step(action)
+      if i == self._skip - 2:
+        self._obs_buffer[0] = obs
+      if i == self._skip - 1:
+        self._obs_buffer[1] = obs
+      total_reward += reward
+      if terminated or truncated: break
+    # Note that the observation on the done=True frame
+    # doesn't matter
+    self.max_frame = self._obs_buffer.max(axis=0)
+
+    return self.max_frame, total_reward, terminated, truncated, info
+
+  def reset(self, **kwargs): return self.env.reset(**kwargs)
+
 
 from models.frame import FrameDecoder, FrameEncoder
 from models.transformer import EMBED_DIM, TransformerEncoder, Head
@@ -60,10 +91,10 @@ class Tokenizer:
 
 @dataclass
 class WorldModelOutput:
-  output_sequence: Tensor
+  output_sequence: Tensor #[f"b t {EMBED_DIM}", dtypes.float]
   logits_latents: Tensor
-  logits_rewards: Tensor
-  logits_ends: Tensor
+  logits_rewards: Tensor #["b t 3", "float"]
+  logits_ends: Tensor #["b t 2", "float"]
 
 class WorldModel:
   def __init__(self):
@@ -119,7 +150,7 @@ def preprocess(obs, size=(64, 64)):
   return Tensor(np.array(image), dtype='float32').permute(2,0,1).reshape(1,1,3,64,64) / 256.0
 
 if __name__ == "__main__":
-  env = gym.make('PongNoFrameskip-v4') #, render_mode="human")
+  env = MaxAndSkipEnv(gym.make('PongNoFrameskip-v4', render_mode="human"))
   obs, info = env.reset()
 
   model = Model()
@@ -129,18 +160,14 @@ if __name__ == "__main__":
   for k,v in dat.items(): print(k, v.shape)
   nn.state.load_state_dict(model, dat)
 
-  act = 5
-  obs, reward, terminated, truncated, info = env.step(act)
-  img_0 = preprocess(obs)
-  obs, reward, terminated, truncated, info = env.step(0)
-  img_1 = preprocess(obs)
-
+  """
   import pygame
   pygame.init()
-  screen = pygame.display.set_mode((64*8, 64*8))
+  screen = pygame.display.set_mode((64*8*2, 64*8))
 
   def draw(x:Tensor):
-    surf = pygame.surfarray.make_surface((x[0, 0].permute(2,1,0)*256).cast('uint8').repeat_interleave(8, 0).repeat_interleave(8, 1).numpy())
+    img = x[0, 0].permute(2,1,0)
+    surf = pygame.surfarray.make_surface((img*256).cast('uint8').repeat_interleave(8, 0).repeat_interleave(8, 1).numpy())
     screen.blit(surf, (0, 0))
     pygame.display.flip()
 
@@ -156,13 +183,13 @@ if __name__ == "__main__":
         if event.key == pygame.K_s: return 5
 
   # roll out down
-
+  img_0 = preprocess(obs)
   imgs = [img_0]
   transformer_tokens = Tensor.zeros(1, 0, EMBED_DIM)
-  #for i in range(10):
   while 1:
-    draw(img_0)
-    act = getkey()
+    draw(Tensor.cat(img_0, preprocess(obs), dim=4))
+    act = env.action_space.sample()
+    obs, reward, terminated, truncated, info = env.step(act)
     frames_emb = img_0.sequential(model.world_model.frame_cnn)[:, 0]
     act_tokens_emb = model.world_model.act_emb(Tensor([[act]]))
     print(transformer_tokens.shape, frames_emb.shape, act_tokens_emb.shape)
@@ -180,59 +207,7 @@ if __name__ == "__main__":
     img_1_pred = model.tokenizer.decode(img_0, Tensor([[act]]), qq, should_clamp=True)
     imgs.append(img_1_pred)
     img_0 = img_1_pred
-  #plt.imshow(Tensor.cat(*[x[0, 0].permute(1,2,0) for x in imgs], dim=1).numpy())
-  #plt.show()
-
-  exit(0)
-
-
-  real_q = model.tokenizer(img_0, Tensor([[act]]), img_1)
-  print("real tokens", real_q.tokens.numpy())
-
-  frames_emb = img_0.sequential(model.world_model.frame_cnn)
-  act_tokens_emb = rearrange(model.world_model.act_emb(Tensor([[act]])), 'b t e -> b t 1 e')
-  print(frames_emb.shape, act_tokens_emb.shape)
-  tokens = Tensor.cat(frames_emb, act_tokens_emb, dim=2)[:, 0]
-  latents = []
-  for i in range(4):
-    out = model.world_model.transformer(tokens)
-    logits_latents = model.world_model.head_latents(out[:, -1:], 0, 0)[0]
-    latent = logits_latents.exp().softmax().multinomial().flatten()
-    latents.append(latent)
-    emb_latent = model.world_model.latents_emb(latent)
-    tokens = tokens.cat(emb_latent, dim=1)
-
-  #tokens = real_q.tokens.flatten()
-  tokens = Tensor.cat(*latents)
-  print("tokens", tokens.shape, tokens.numpy())
-  latents = model.tokenizer.quantizer.embed_tokens(tokens).reshape((1, 1, 4, 1024))
-
-  qq = rearrange(latents, 'b t (h w) (k l e) -> b t e (h k) (w l)',
-                 h=model.tokenizer.tokens_grid_res, k=model.tokenizer.token_res, l=model.tokenizer.token_res)
-  dec = model.tokenizer.decode(img_0, Tensor([[act]]), qq, should_clamp=True)
-
-  print(dec)
-
-  plt.imshow(Tensor.cat(*[x[0, 0].permute(1,2,0) for x in [img_0, img_1, dec]], dim=1).numpy())
-  plt.show()
-
-  #encoded = model.tokenizer(img_0, Tensor([[act]]), img_1)
-  #print(encoded.tokens.shape, encoded.tokens.dtype)
-
-
-  exit(0)
-
-  act = model.world_model.act_emb(Tensor([0]))
-  print(act.shape)
-
-  out = model.world_model(act)
-  print(out)
-
-  print(out.logits_latents.exp().softmax().flatten().multinomial().numpy())
-  print(out.logits_rewards.exp().softmax().numpy())
-  print(out.logits_ends.exp().softmax().numpy())
-
-  exit(0)
+  """
 
   # TODO: is this correct with the LSTM
   #@TinyJit
@@ -246,28 +221,4 @@ if __name__ == "__main__":
     action = get_action(img_0)
     obs, reward, terminated, truncated, info = env.step(action.item())
 
-  """
-  x = rearrange(img_0.sequential(model.world_model.frame_cnn), 'b 1 k e -> b k e')
-  a_choice = env.action_space.sample()
-  a = model.world_model.act_emb(Tensor([a_choice]))
-  # TODO: Tensor.cat((x, a), dim=1) should work also?
-  # or should we crack down on all these things...
-  # actually probably not on that one, first arg should be Tensor
-  output = model.world_model(x.cat(a, dim=1))
-  """
-
   exit(0)
-
-
-  for i in range(100):
-    action = env.action_space.sample()
-    obs, reward, terminated, truncated, info = env.step(action)
-    img_1 = preprocess(obs)
-    out = model.encode_decode(img_0, Tensor([action]), img_1)
-
-    print(out)
-    pred = out[0, 0].permute(1,2,0).numpy()
-    plt.imshow(Tensor.cat(*[x[0, 0].permute(1,2,0) for x in [img_0, img_1, out]], dim=1).numpy())
-    plt.draw()
-    plt.pause(0.01)
-    img_0 = img_1
