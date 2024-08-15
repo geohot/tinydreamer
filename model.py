@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 from typing import List, Dict, Optional, Tuple
+import argparse
 import math
 from dataclasses import dataclass
 from tinygrad import Tensor, nn, TinyJit, dtypes
@@ -149,6 +150,13 @@ def preprocess(obs, size=(64, 64)):
   return Tensor(np.array(image), dtype='float32').permute(2,0,1).reshape(1,1,3,64,64) / 256.0
 
 if __name__ == "__main__":
+  parser = argparse.ArgumentParser()
+  parser.add_argument('--action', choices=['model', 'user', 'random'], default='model',
+                      help='Choose the action to perform (default: model)')
+  parser.add_argument('--render', choices=['none', 'worldmodel', 'tokenizer'], default='tokenizer',
+                      help='Choose the rendering option (default: tokenizer)')
+  args = parser.parse_args()
+
   env = MaxAndSkipEnv(gym.make('PongNoFrameskip-v4')) #, render_mode="human"))
   obs, info = env.reset()
 
@@ -156,7 +164,7 @@ if __name__ == "__main__":
 
   # scp t18:~/build/delta-iris/outputs/2024-08-13/20-34-53/checkpoints/last.pt .
   dat = nn.state.torch_load("last.pt")
-  for k,v in dat.items(): print(k, v.shape)
+  #for k,v in dat.items(): print(k, v.shape)
   nn.state.load_state_dict(model, dat)
 
   import pygame
@@ -190,36 +198,43 @@ if __name__ == "__main__":
 
   # roll out down
   transformer_tokens = None
+  img_0 = None
   while 1:
     cur_img = preprocess(obs)
-    act = get_action(cur_img)
-    #act = getkey()
-    #act = env.action_space.sample()
+    if img_0 is None: img_0 = cur_img
+    if args.action == "model":
+      act = get_action(cur_img)
+    elif args.action == "user":
+      act = getkey()
+    elif args.action == "random":
+      act = env.action_space.sample()
     obs, reward, terminated, truncated, info = env.step(act)
-
-    # resync every 20 frames
-    if transformer_tokens is None or transformer_tokens.shape[1] >= 20*6:
-      img_0 = cur_img
-      transformer_tokens = Tensor.zeros(1, 0, EMBED_DIM)
+    if terminated or truncated: break
 
     draw(Tensor.cat(img_0, cur_img, dim=4))
 
-    frames_emb = img_0.sequential(model.world_model.frame_cnn)[:, 0]
-    act_tokens_emb = model.world_model.act_emb(Tensor([[act]]))
-    print(transformer_tokens.shape, frames_emb.shape, act_tokens_emb.shape)
-    transformer_tokens = transformer_tokens.cat(frames_emb, act_tokens_emb, dim=1).contiguous()
-    latents = []
-    for i in range(4):
-      out = model.world_model.transformer(transformer_tokens)
-      logits_latents = model.world_model.head_latents(out[:, -1:], 0, 0)[0]
-      latent = logits_latents.exp().softmax().multinomial().flatten()
-      latents.append(latent)
-      transformer_tokens = transformer_tokens.cat(model.world_model.latents_emb(latent), dim=1)
-    latents = model.tokenizer.quantizer.embed_tokens(Tensor.cat(*latents)).reshape((1, 1, 4, 1024))
-    qq = rearrange(latents, 'b t (h w) (k l e) -> b t e (h k) (w l)',
-                  h=model.tokenizer.tokens_grid_res, k=model.tokenizer.token_res, l=model.tokenizer.token_res)
-    img_1_pred = model.tokenizer.decode(img_0, Tensor([[act]]), qq, should_clamp=True)
-    img_0 = img_1_pred
+    if args.render == "worldmodel":
+      # resync every 20 frames
+      if transformer_tokens is None or transformer_tokens.shape[1] >= 20*6:
+        img_0 = cur_img
+        transformer_tokens = Tensor.zeros(1, 0, EMBED_DIM)
 
-
-  exit(0)
+      frames_emb = img_0.sequential(model.world_model.frame_cnn)[:, 0]
+      act_tokens_emb = model.world_model.act_emb(Tensor([[act]]))
+      print(transformer_tokens.shape, frames_emb.shape, act_tokens_emb.shape)
+      transformer_tokens = transformer_tokens.cat(frames_emb, act_tokens_emb, dim=1).contiguous()
+      latents = []
+      for i in range(4):
+        out = model.world_model.transformer(transformer_tokens)
+        logits_latents = model.world_model.head_latents(out[:, -1:], 0, 0)[0]
+        latent = logits_latents.exp().softmax().multinomial().flatten()
+        latents.append(latent)
+        transformer_tokens = transformer_tokens.cat(model.world_model.latents_emb(latent), dim=1)
+      latents = model.tokenizer.quantizer.embed_tokens(Tensor.cat(*latents)).reshape((1, 1, 4, 1024))
+      qq = rearrange(latents, 'b t (h w) (k l e) -> b t e (h k) (w l)',
+                    h=model.tokenizer.tokens_grid_res, k=model.tokenizer.token_res, l=model.tokenizer.token_res)
+      img_0 = model.tokenizer.decode(img_0, Tensor([[act]]), qq, should_clamp=True)
+    elif args.render == "tokenizer":
+      img_0 = model.tokenizer.encode_decode(img_0, Tensor([[act]]), preprocess(obs))
+    elif args.render == "none":
+      img_0 = preprocess(obs)
