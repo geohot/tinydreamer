@@ -11,11 +11,10 @@ class Upsample:
   def __init__(self, num_channels: int) -> None:
     self.conv = nn.Conv2d(num_channels, num_channels, kernel_size=3, stride=1, padding=1)
   def __call__(self, x: Tensor) -> Tensor:
-    # TODO: is this fast?
-    # AssertionError: only supports linear interpolate
+    # TODO: is this fast?  AssertionError: only supports linear interpolate
     #x = x.interpolate([s*2 for s in x.size()], mode="nearest")
-    x = rearrange(x, 'b c h w -> b c h 1 w 1').expand(x.shape[0], x.shape[1], x.shape[2], 2, x.shape[3], 2) \
-      .reshape(x.shape[0], x.shape[1], x.shape[2]*2, x.shape[3]*2)
+    # TODO: repeat_interleave should support a tuple for dim
+    x = x.repeat_interleave(2, dim=2).repeat_interleave(2, dim=3)
     return self.conv(x)
 
 class ResidualBlock:
