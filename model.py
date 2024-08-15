@@ -4,7 +4,7 @@ import argparse
 import math
 import pygame
 from dataclasses import dataclass
-from tinygrad import Tensor, nn, TinyJit, dtypes
+from tinygrad import Tensor, nn, TinyJit, dtypes, GlobalCounters
 from einops import rearrange
 import gymnasium as gym
 from PIL import Image
@@ -135,7 +135,13 @@ class CnnLstmActorCritic:
 
   def __call__(self, x:Tensor) -> ActorCriticOutput:
     x = x.sequential(self.cnn)
-    self.hx, self.cx = self.lstm(x, (self.hx, self.cx) if self.hx is not None else None)
+    hx, cx = self.lstm(x, (self.hx, self.cx) if self.hx is not None else None)
+    if self.hx is None:
+      self.hx, self.cx = hx, cx
+    else:
+      # are these assigns needed?
+      self.hx.assign(hx)
+      self.cx.assign(cx)
     logits_actions = rearrange(self.actor_linear(self.hx), 'b a -> b 1 a')
     logits_values = rearrange(self.critic_linear(self.hx), 'b c -> b 1 c')
     return ActorCriticOutput(logits_actions, logits_values)
@@ -193,20 +199,20 @@ if __name__ == "__main__":
         if event.key == pygame.K_s: return 5
 
   # TODO: is this correct with the LSTM and TinyJIT
-  #@TinyJit
+  @TinyJit
   def get_action(img_0:Tensor) -> Tensor:
     x = model.actor_critic['model'](img_0)
-    action = x.logits_actions.exp().softmax().flatten().multinomial()
-    return action.item()
+    return x.logits_actions.exp().softmax().flatten().multinomial()
 
   # roll out down
   transformer_tokens = None
   img_0 = None
   while 1:
+    GlobalCounters.reset()
     cur_img = preprocess(obs)
     if img_0 is None: img_0 = cur_img
     if args.action == "model":
-      act = get_action(cur_img)
+      act = get_action(cur_img).item()
     elif args.action == "user":
       act = getkey()
     elif args.action == "random":
