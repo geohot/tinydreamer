@@ -152,10 +152,11 @@ class Model:
     self.tokenizer = Tokenizer()
     self.actor_critic = {"model": CnnLstmActorCritic(6), "target_model": CnnLstmActorCritic(6)}
 
-# TODO: this should be written in tinygrad. tinygrad needs to support NEAREST
-def preprocess(obs, size=(64, 64)):
-  image = Image.fromarray(obs).resize(size, Image.BILINEAR)
-  return Tensor(np.array(image), dtype='float32').permute(2,0,1).reshape(1,1,3,64,64) / 255.0
+def preprocess(obs):
+  # TODO: tinygrad has a known bug in uint8 interpolate linear
+  #return Tensor(obs).permute(2,0,1).interpolate((64, 64), mode='linear').float().reshape(1,1,3,64,64) / 255.0
+  image = Image.fromarray(obs).resize((64, 64), Image.BILINEAR)
+  return Tensor(np.array(image)).permute(2,0,1).float().reshape(1,1,3,64,64) / 255.0
 
 if __name__ == "__main__":
   parser = argparse.ArgumentParser()
