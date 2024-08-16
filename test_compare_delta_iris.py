@@ -42,6 +42,7 @@ def main(cfg: DictConfig) -> None:
   print("testing worldmodel frame_cnn")
   test_x_emb = img_0.sequential(model.world_model.frame_cnn)
   real_x_emb = agent.world_model.frame_cnn(torch.Tensor(img_0.numpy()))
+  assert test_x_emb.shape == real_x_emb.shape
   np.testing.assert_allclose(test_x_emb.numpy(), real_x_emb.numpy(), atol=1e-4)
   print("PASS")
 
@@ -80,6 +81,7 @@ def main(cfg: DictConfig) -> None:
   real_hx, real_cx = agent.actor_critic.model.lstm(x)
   x = agent.actor_critic.model.cnn(torch.Tensor(img_1.numpy()))
   real_hx_2, real_cx_2 = agent.actor_critic.model.lstm(x, (real_hx, real_cx))
+  # NOTE: this is wrong in new torch?
   np.testing.assert_allclose(test_hx.numpy(), real_hx.numpy(), atol=1e-5)
   np.testing.assert_allclose(test_cx.numpy(), real_cx.numpy(), atol=1e-5)
   np.testing.assert_allclose(test_hx_2.numpy(), real_hx_2.numpy(), atol=1e-5)

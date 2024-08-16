@@ -37,3 +37,4 @@ Training:
     * transformer([frame_cnn(img_0), act_emb(a), latents_emb(tokens_from_encoder), ...])
   * Last, actor critic is trained (in world model)
 
+Our training strategy is to reproduce each one in reverse.
