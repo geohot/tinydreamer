@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 import gymnasium as gym
 from model import Model, CnnLstmActorCritic, MaxAndSkipEnv, preprocess, EMBED_DIM
-from tinygrad import nn, Tensor
+from tinygrad import nn, Tensor, GlobalCounters
 from einops import rearrange
-import matplotlib.pyplot as plt
 
 BS = 16
 
@@ -26,17 +25,16 @@ if __name__ == "__main__":
   nn.state.load_state_dict(model, nn.state.torch_load("last.pt"))
   ac = CnnLstmActorCritic(6)
 
-  transformer_tokens = Tensor.zeros(BS, 0, EMBED_DIM)
-
   env = MaxAndSkipEnv(gym.make('PongNoFrameskip-v4'))
   obs, info = env.reset()
   img_0 = preprocess(obs).expand(BS, -1, -1, -1, -1)
 
-  for j in range(5):
+  transformer_tokens = Tensor.zeros(BS, 0, EMBED_DIM)
+  ac.reset()
+  for j in range(25):
+    GlobalCounters.reset()
     print(img_0.shape)
-    draw_me = img_0.reshape(4,4,3,64,64).permute(2,0,3,1,4).reshape(3, 4*64, 4*64)
-    #print(draw_me.shape)
-    draw(draw_me)
+    draw(rearrange(img_0, "(bw bh) 1 c w h -> c (bw w) (bh h)", bw=4))
 
     ac_out = ac(img_0)
     sampled_actions = ac_out.logits_actions.exp().softmax().squeeze(1).multinomial()
@@ -53,20 +51,5 @@ if __name__ == "__main__":
       transformer_tokens = transformer_tokens.cat(model.world_model.latents_emb(latent), dim=1)
     latents = model.tokenizer.quantizer.embed_tokens(Tensor.cat(*latents, dim=1)).unsqueeze(1)
     qq = rearrange(latents, 'b t (h w) (k l e) -> b t e (h k) (w l)',
-                  h=model.tokenizer.tokens_grid_res, k=model.tokenizer.token_res, l=model.tokenizer.token_res)
+                   h=model.tokenizer.tokens_grid_res, k=model.tokenizer.token_res, l=model.tokenizer.token_res)
     img_0 = model.tokenizer.decode(img_0, sampled_actions, qq, should_clamp=True)
-
-
-
-
-  """
-  env = gym.make('ALE/Pong-v5', render_mode="human")  # remove render_mode in training
-  obs, info = env.reset()
-  episode_over = False
-  while not episode_over:
-    #action = policy(obs)  # to implement - use `env.action_space.sample()` for a random policy
-    action = env.action_space.sample()
-    obs, reward, terminated, truncated, info = env.step(action)
-    episode_over = terminated or truncated
-  env.close()
-  """

@@ -9,7 +9,6 @@ from einops import rearrange
 import gymnasium as gym
 from PIL import Image
 import numpy as np
-import matplotlib.pyplot as plt
 
 # copied from delta-iris
 class MaxAndSkipEnv(gym.Wrapper):
@@ -127,11 +126,13 @@ class ActorCriticOutput:
 class CnnLstmActorCritic:
   def __init__(self, num_actions):
     self.lstm_dim = 512
-    self.hx, self.cx = None, None
     self.cnn = [FrameEncoder([3,32,64,128,16]), lambda x: rearrange(x, 'b t c h w -> (b t) (h w c)')]
     self.actor_linear = nn.Linear(self.lstm_dim, num_actions)
     self.critic_linear = nn.Linear(self.lstm_dim, 1)
     self.lstm = nn.LSTMCell(1024, self.lstm_dim)
+    self.reset()
+
+  def reset(self): self.hx, self.cx = None, None
 
   def __call__(self, x:Tensor) -> ActorCriticOutput:
     x = x.sequential(self.cnn)
