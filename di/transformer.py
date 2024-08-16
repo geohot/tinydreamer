@@ -1,6 +1,8 @@
-from tinygrad import Tensor, nn
+from typing import Union
+from tinygrad import Tensor, nn, Variable
 from einops import rearrange
 
+MAX_CONTEXT = 156
 EMBED_DIM = 256
 
 class MLPLayer:
@@ -13,7 +15,20 @@ class Attention:
   def __init__(self):
     self.proj = nn.Linear(EMBED_DIM, EMBED_DIM)
     self.num_heads = 4
+    self.start_pos = 0
+
   def __call__(self, q:Tensor, k:Tensor, v:Tensor) -> Tensor:
+    # update the cache
+    """
+    #if not hasattr(self, 'cache_kv'): self.cache_kv = Tensor.zeros(2, k.size(0), MAX_CONTEXT, EMBED_DIM, dtype=k.dtype).contiguous().realize()
+    seqlen = q.size(1)
+    assert k.dtype == v.dtype == self.cache_kv.dtype, f"{k.dtype=}, {v.dtype=}, {self.cache_kv.dtype=}"
+    self.cache_kv.shrink((None, None, (self.start_pos, self.start_pos+seqlen), None)).assign(Tensor.stack(k, v)).realize()
+    k = self.cache_kv[0].shrink((None, (0, self.start_pos+seqlen), None))
+    v = self.cache_kv[1].shrink((None, (0, self.start_pos+seqlen), None))
+    self.start_pos += seqlen
+    """
+
     q: Tensor = rearrange(q, 'b q (h e) -> b h q e', h=self.num_heads)
     k = rearrange(k, 'b k (h e) -> b h k e', h=self.num_heads)
     v = rearrange(v, 'b k (h d) -> b h k d', h=self.num_heads)
@@ -43,7 +58,7 @@ class EncoderLayer:
 
 class TransformerEncoder:
   def __init__(self):
-    self.pos_emb = nn.Embedding(156, EMBED_DIM)
+    self.pos_emb = nn.Embedding(MAX_CONTEXT, EMBED_DIM)
     self.ln = nn.LayerNorm(EMBED_DIM)
     self.blocks = [EncoderLayer() for _ in range(3)]
   def __call__(self, x:Tensor) -> Tensor:

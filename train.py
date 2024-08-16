@@ -41,6 +41,7 @@ if __name__ == "__main__":
 
     frame_emb = img_0.sequential(model.world_model.frame_cnn)[:, 0]
     act_emb = model.world_model.act_emb(sampled_actions)
+    #out = model.world_model.transformer(frame_emb.cat(act_emb, dim=1))
     transformer_tokens = transformer_tokens.cat(frame_emb, act_emb, dim=1).contiguous()
     latents = []
     for i in range(4):
@@ -48,7 +49,10 @@ if __name__ == "__main__":
       logits_latents = model.world_model.head_latents(out[:, -1:])
       latent = logits_latents.exp().softmax().squeeze(1).multinomial()
       latents.append(latent)
-      transformer_tokens = transformer_tokens.cat(model.world_model.latents_emb(latent), dim=1)
+      latent_emb = model.world_model.latents_emb(latent)
+      #out = model.world_model.transformer(latent_emb)
+      transformer_tokens = transformer_tokens.cat(latent_emb, dim=1)
+
     latents = model.tokenizer.quantizer.embed_tokens(Tensor.cat(*latents, dim=1)).unsqueeze(1)
     qq = rearrange(latents, 'b t (h w) (k l e) -> b t e (h k) (w l)',
                    h=model.tokenizer.tokens_grid_res, k=model.tokenizer.token_res, l=model.tokenizer.token_res)
