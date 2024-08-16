@@ -161,7 +161,7 @@ if __name__ == "__main__":
   parser = argparse.ArgumentParser()
   parser.add_argument('--action', choices=['model', 'user', 'random'], default='model',
                       help='Choose the action to perform (default: model)')
-  parser.add_argument('--render', choices=['none', 'worldmodel', 'tokenizer'], default='tokenizer',
+  parser.add_argument('--render', choices=['none', 'worldmodel', 'tokenizer', 'tokenizer_free'], default='tokenizer',
                       help='Choose the rendering option (default: tokenizer)')
   args = parser.parse_args()
 
@@ -245,5 +245,7 @@ if __name__ == "__main__":
       img_0 = model.tokenizer.decode(img_0, Tensor([[act]]), qq, should_clamp=True)
     elif args.render == "tokenizer":
       img_0 = model.tokenizer.encode_decode(cur_img, Tensor([[act]]), preprocess(obs))
+    elif args.render == "tokenizer_free":
+      img_0 = model.tokenizer.encode_decode(img_0, Tensor([[act]]), preprocess(obs))
     elif args.render == "none":
       img_0 = preprocess(obs)
