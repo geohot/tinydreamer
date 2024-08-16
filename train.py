@@ -29,7 +29,7 @@ if __name__ == "__main__":
   obs, info = env.reset()
   img_0 = preprocess(obs).expand(BS, -1, -1, -1, -1)
 
-  transformer_tokens = Tensor.zeros(BS, 0, EMBED_DIM)
+  model.world_model.transformer.start_pos = 0
   ac.reset()
   for j in range(25):
     GlobalCounters.reset()
@@ -41,17 +41,14 @@ if __name__ == "__main__":
 
     frame_emb = img_0.sequential(model.world_model.frame_cnn)[:, 0]
     act_emb = model.world_model.act_emb(sampled_actions)
-    #out = model.world_model.transformer(frame_emb.cat(act_emb, dim=1))
-    transformer_tokens = transformer_tokens.cat(frame_emb, act_emb, dim=1).contiguous()
+    out = model.world_model.transformer(frame_emb.cat(act_emb, dim=1))
     latents = []
     for i in range(4):
-      out = model.world_model.transformer(transformer_tokens)
       logits_latents = model.world_model.head_latents(out[:, -1:])
       latent = logits_latents.exp().softmax().squeeze(1).multinomial()
       latents.append(latent)
       latent_emb = model.world_model.latents_emb(latent)
-      #out = model.world_model.transformer(latent_emb)
-      transformer_tokens = transformer_tokens.cat(latent_emb, dim=1)
+      out = model.world_model.transformer(latent_emb)
 
     latents = model.tokenizer.quantizer.embed_tokens(Tensor.cat(*latents, dim=1)).unsqueeze(1)
     qq = rearrange(latents, 'b t (h w) (k l e) -> b t e (h k) (w l)',
