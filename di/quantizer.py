@@ -1,7 +1,6 @@
 from typing import List, Dict, Optional, Tuple
 import math
 from tinygrad import Tensor, nn
-from einops import rearrange
 from dataclasses import dataclass
 
 @dataclass
@@ -21,7 +20,7 @@ class Quantizer:
   def __call__(self, z:Tensor) -> QuantizerOutput:
     z = self.pre_quant_proj(z)
     b, k = z.size(0), z.size(2)
-    z = rearrange(z, 'b t k e -> (b t k) e')
+    z = z.rearrange('b t k e -> (b t k) e')
 
     cosine_similarity = Tensor.einsum('n e, c e -> n c', z, self.codebook)
     tokens = cosine_similarity.argmax(axis=-1)  # TODO: support both axis and dim
@@ -33,9 +32,8 @@ class Quantizer:
     q = z + (q - z).detach()
     q = self.post_quant_proj(q)
 
-    q = rearrange(q, '(b t k) e -> b t k e', b=b, k=k)
-    tokens = rearrange(tokens, '(b t k) -> b t k', b=b, k=k)
-
+    q = q.rearrange('(b t k) e -> b t k e', b=b, k=k)
+    tokens = tokens.rearrange('(b t k) -> b t k', b=b, k=k)
     return QuantizerOutput(q, tokens, losses, metrics)
 
   def embed_tokens(self, tokens: Tensor) -> Tensor:

@@ -1,6 +1,5 @@
 from typing import List
 from tinygrad import Tensor, nn
-from einops import rearrange
 
 class Downsample:
   def __init__(self, num_channels: int) -> None:
@@ -46,9 +45,9 @@ class FrameDecoder:
 
   def __call__(self, x:Tensor) -> Tensor:
     b, t, _, _, _ = x.size()
-    x = rearrange(x, 'b t c h w -> (b t) c h w')
+    x = x.rearrange('b t c h w -> (b t) c h w')
     x = x.sequential(self.decoder)
-    x = rearrange(x, '(b t) c h w -> b t c h w', b=b, t=t)
+    x = x.rearrange('(b t) c h w -> b t c h w', b=b, t=t)
     return x
 
 class FrameEncoder:
@@ -67,7 +66,7 @@ class FrameEncoder:
 
   def __call__(self, x: Tensor) -> Tensor:
     b, t, _, _, _ = x.size()
-    x = rearrange(x, 'b t c h w -> (b t) c h w')
+    x = x.rearrange('b t c h w -> (b t) c h w')
     x = x.sequential(self.encoder)
-    x = rearrange(x, '(b t) c h w -> b t c h w', b=b, t=t)
+    x = x.rearrange('(b t) c h w -> b t c h w', b=b, t=t)
     return x

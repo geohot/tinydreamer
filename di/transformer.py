@@ -1,6 +1,5 @@
 from typing import Union
 from tinygrad import Tensor, nn, Variable
-from einops import rearrange
 
 MAX_CONTEXT = 156
 EMBED_DIM = 256
@@ -28,11 +27,10 @@ class Attention:
 
     # TODO: this should be smartly folded in
     mask = Tensor.full((1, 1, seqlen, start_pos+seqlen), float("-inf"), dtype=q.dtype, device=q.device).triu(start_pos+1)
-    q: Tensor = rearrange(q, 'b q (h e) -> b h q e', h=self.num_heads)
-    k = rearrange(k, 'b k (h e) -> b h k e', h=self.num_heads)
-    v = rearrange(v, 'b k (h d) -> b h k d', h=self.num_heads)
-    y = q.scaled_dot_product_attention(k, v, mask)
-    y = rearrange(y, 'b h q d -> b q (h d)')
+    q: Tensor = q.rearrange('b q (h e) -> b h q e', h=self.num_heads)
+    k = k.rearrange('b k (h e) -> b h k e', h=self.num_heads)
+    v = v.rearrange('b k (h d) -> b h k d', h=self.num_heads)
+    y = q.scaled_dot_product_attention(k, v, mask).rearrange('b h q d -> b q (h d)')
     return self.proj(y)
 
 class SelfAttentionLayer:

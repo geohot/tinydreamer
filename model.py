@@ -5,7 +5,6 @@ import math
 import pygame
 from dataclasses import dataclass
 from tinygrad import Tensor, nn, TinyJit, dtypes, GlobalCounters
-from einops import rearrange
 import gymnasium as gym
 from PIL import Image
 import numpy as np
@@ -62,18 +61,18 @@ class Tokenizer:
 
   def __call__(self, x1: Tensor, a: Tensor, x2: Tensor) -> QuantizerOutput:
     z = self.encode(x1, a, x2)
-    z = rearrange(z, 'b t c (h k) (w l) -> b t (h w) (k l c)', h=self.tokens_grid_res, w=self.tokens_grid_res)
+    z = z.rearrange('b t c (h k) (w l) -> b t (h w) (k l c)', h=self.tokens_grid_res, w=self.tokens_grid_res)
     return self.quantizer(z)
 
   # need typing
   def encode(self, x1: Tensor, a: Tensor, x2: Tensor) -> Tensor:
-    a_emb = rearrange(self.encoder_act_emb(a), 'b t (h w) -> b t 1 h w', h=x1.size(3))
+    a_emb = self.encoder_act_emb(a).rearrange('b t (h w) -> b t 1 h w', h=x1.size(3))
     encoder_input = Tensor.cat(x1, a_emb, x2, dim=2)
     return self.encoder(encoder_input)
 
   def decode(self, x1: Tensor, a: Tensor, q2: Tensor, should_clamp: bool = False) -> Tensor:
     x1_emb = self.frame_cnn(x1)
-    a_emb = rearrange(self.decoder_act_emb(a), 'b t (c h w) -> b t c h w', c=4, h=x1_emb.size(3))
+    a_emb = self.decoder_act_emb(a).rearrange('b t (c h w) -> b t c h w', c=4, h=x1_emb.size(3))
     decoder_input = Tensor.cat(x1_emb, a_emb, q2, dim=2)
     r = self.decoder(decoder_input)
     r = r.clamp(0, 1).mul(255).round().div(255) if should_clamp else r
@@ -82,8 +81,8 @@ class Tokenizer:
   @TinyJit
   def encode_decode(self, x1: Tensor, a: Tensor, x2: Tensor) -> Tensor:
     z = self.encode(x1, a, x2)
-    z = rearrange(z, 'b t c (h k) (w l) -> b t (h w) (k l c)', k=self.token_res, l=self.token_res)
-    q = rearrange(self.quantizer(z).q, 'b t (h w) (k l e) -> b t e (h k) (w l)', h=self.tokens_grid_res, k=self.token_res, l=self.token_res)
+    z = z.rearrange('b t c (h k) (w l) -> b t (h w) (k l c)', k=self.token_res, l=self.token_res)
+    q = self.quantizer(z).q.rearrange('b t (h w) (k l e) -> b t e (h k) (w l)', h=self.tokens_grid_res, k=self.token_res, l=self.token_res)
     r = self.decode(x1, a, q, should_clamp=True)
     return r
 
@@ -99,7 +98,7 @@ class WorldModelOutput:
 
 class WorldModel:
   def __init__(self):
-    self.frame_cnn = [FrameEncoder([3,32,64,128,4]), lambda x: rearrange(x, 'b t c h w -> b t 1 (h w c)'), nn.LayerNorm(EMBED_DIM)]
+    self.frame_cnn = [FrameEncoder([3,32,64,128,4]), lambda x: x.rearrange('b t c h w -> b t 1 (h w c)'), nn.LayerNorm(EMBED_DIM)]
     self.act_emb = nn.Embedding(6, EMBED_DIM)  # embed the action
     self.latents_emb = nn.Embedding(1024, EMBED_DIM)
 
@@ -126,7 +125,7 @@ class ActorCriticOutput:
 class CnnLstmActorCritic:
   def __init__(self, num_actions):
     self.lstm_dim = 512
-    self.cnn = [FrameEncoder([3,32,64,128,16]), lambda x: rearrange(x, 'b t c h w -> (b t) (h w c)')]
+    self.cnn = [FrameEncoder([3,32,64,128,16]), lambda x: x.rearrange('b t c h w -> (b t) (h w c)')]
     self.actor_linear = nn.Linear(self.lstm_dim, num_actions)
     self.critic_linear = nn.Linear(self.lstm_dim, 1)
     self.lstm = nn.LSTMCell(1024, self.lstm_dim)
@@ -143,8 +142,8 @@ class CnnLstmActorCritic:
       # are these assigns needed?
       self.hx.assign(hx)
       self.cx.assign(cx)
-    logits_actions = rearrange(self.actor_linear(self.hx), 'b a -> b 1 a')
-    logits_values = rearrange(self.critic_linear(self.hx), 'b c -> b 1 c')
+    logits_actions = self.actor_linear(self.hx).rearrange('b a -> b 1 a')
+    logits_values = self.critic_linear(self.hx).rearrange('b c -> b 1 c')
     return ActorCriticOutput(logits_actions, logits_values)
 
 class Model:
@@ -153,7 +152,7 @@ class Model:
     self.tokenizer = Tokenizer()
     self.actor_critic = {"model": CnnLstmActorCritic(6), "target_model": CnnLstmActorCritic(6)}
 
-def preprocess(obs):
+def preprocess(obs: Tensor) -> Tensor:
   # TODO: tinygrad has a known bug in uint8 interpolate linear
   #return Tensor(obs).permute(2,0,1).interpolate((64, 64), mode='linear').float().reshape(1,1,3,64,64) / 255.0
   image = Image.fromarray(obs).resize((64, 64), Image.BILINEAR)
@@ -242,8 +241,8 @@ if __name__ == "__main__":
         latents.append(latent)
         transformer_tokens = transformer_tokens.cat(model.world_model.latents_emb(latent), dim=1)
       latents = model.tokenizer.quantizer.embed_tokens(Tensor.cat(*latents)).reshape((1, 1, 4, 1024))
-      qq = rearrange(latents, 'b t (h w) (k l e) -> b t e (h k) (w l)',
-                    h=model.tokenizer.tokens_grid_res, k=model.tokenizer.token_res, l=model.tokenizer.token_res)
+      qq = latents.rearrange('b t (h w) (k l e) -> b t e (h k) (w l)',
+                             h=model.tokenizer.tokens_grid_res, k=model.tokenizer.token_res, l=model.tokenizer.token_res)
       img_0 = model.tokenizer.decode(img_0, Tensor([[act]]), qq, should_clamp=True)
     elif args.render == "tokenizer":
       img_0 = model.tokenizer.encode_decode(cur_img, Tensor([[act]]), preprocess(obs))

@@ -2,7 +2,6 @@
 import gymnasium as gym
 from model import Model, CnnLstmActorCritic, MaxAndSkipEnv, preprocess, EMBED_DIM
 from tinygrad import nn, Tensor, GlobalCounters
-from einops import rearrange
 
 BS = 16
 
@@ -34,7 +33,7 @@ if __name__ == "__main__":
   for j in range(25):
     GlobalCounters.reset()
     print(img_0.shape)
-    draw(rearrange(img_0, "(bw bh) 1 c w h -> c (bw w) (bh h)", bw=4))
+    draw(img_0.rearrange("(bw bh) 1 c w h -> c (bw w) (bh h)", bw=4))
 
     ac_out = ac(img_0)
     sampled_actions = ac_out.logits_actions.exp().softmax().squeeze(1).multinomial()
@@ -51,6 +50,6 @@ if __name__ == "__main__":
       out = model.world_model.transformer(latent_emb)
 
     latents = model.tokenizer.quantizer.embed_tokens(Tensor.cat(*latents, dim=1)).unsqueeze(1)
-    qq = rearrange(latents, 'b t (h w) (k l e) -> b t e (h k) (w l)',
+    qq = latents.rearrange('b t (h w) (k l e) -> b t e (h k) (w l)',
                    h=model.tokenizer.tokens_grid_res, k=model.tokenizer.token_res, l=model.tokenizer.token_res)
     img_0 = model.tokenizer.decode(img_0, sampled_actions, qq, should_clamp=True)
